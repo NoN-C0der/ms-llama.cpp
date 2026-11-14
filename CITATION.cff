@@ -1,0 +1,12 @@
+cff-version: 1.2.0
+message: "If you use MS (Mad Shift), please cite it as below."
+title: "MS (Mad Shift): trellis-coded GGUF quantization for llama.cpp"
+type: software
+authors:
+  - family-names: Priester
+    given-names: Matthew
+    orcid: "https://orcid.org/0009-0000-0032-5292"
+repository-code: "https://github.com/devvexus/ms-llama.cpp"
+url: "https://huggingface.co/devvexus"
+license: MIT
+date-released: "2026-11-14"
