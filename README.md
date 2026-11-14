@@ -13,7 +13,7 @@ standard quants and unsloth's dynamic quants**: on Qwen3.5-2B, every MS file has
 model than the unsloth file of the same or larger size.
 
 - **How:** every large weight matrix is stored as a bitshift-trellis code (the code of QTIP, Tseng et al. 2024) after a random
-  Hadamard rotation, produced by MS's own calibration-aware conversion. Details: [docs/ms.md](docs/ms.md).
+  Hadamard rotation, produced by MS's own calibration-aware conversion. Details: [docs/ms.md](docs/ms.md). To our knowledge, MS (Mad Shift) is the first GGUF format built on QTIP's bitshift trellis code.
 - **Models:** [huggingface.co/devvexus](https://huggingface.co/devvexus) ("MS Quants" collection).
 - **Credit and license:** [NOTICE](NOTICE). MS is MIT-licensed like llama.cpp; please credit *MS (Mad Shift) by Matthew Priester*.
 
@@ -22,7 +22,6 @@ model than the unsloth file of the same or larger size.
 ```bash
 git clone https://github.com/devvexus/ms-llama.cpp
 cd ms-llama.cpp
-git checkout ms-split-head   # until the MS release branch is merged into master
 cmake -B build -DGGML_CUDA=ON -DCMAKE_BUILD_TYPE=Release   # CPU only: drop -DGGML_CUDA=ON
 cmake --build build --config Release -j
 ./build/bin/llama-cli -m <MS model>.gguf -ngl 99
