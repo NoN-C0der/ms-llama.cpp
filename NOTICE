@@ -9,6 +9,7 @@ This fork of llama.cpp adds the MS (Mad Shift) weight format, written by Matthew
 
 The trellis code builds on QTIP (A. Tseng, Q. Sun, D. Hou, C. De Sa, "QTIP: Quantization with Trellises and Incoherence
 Processing", NeurIPS 2024, arXiv:2406.11235): the bitshift trellis and its computed "1MAD" decoder.
+MS is an independent implementation written from the QTIP paper; it contains no code from the QTIP or QuIP# repositories.
 
 The MS additions are distributed under the same MIT License as llama.cpp (see LICENSE). When you copy or adapt them, keep this
 notice and the copyright line above, as the MIT License requires.
