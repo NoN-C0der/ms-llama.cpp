@@ -4076,6 +4076,44 @@ void llama_model_set_attn_rot(struct llama_model * model, bool value) {
     model->attn_rot = value;
 }
 
+bool llama_model_borrow_io(struct llama_model * model, const struct llama_model * src) {
+    if (model->tok_embd && model->output) {
+        return true;
+    }
+    if (model->tok_embd || model->output) {
+        LLAMA_LOG_ERROR("%s: the model has only one of token embedding and output head\n", __func__);
+        return false;
+    }
+    if (model->arch != src->arch || model->hparams.n_embd != src->hparams.n_embd ||
+        model->vocab.n_tokens() != src->vocab.n_tokens() || !src->tok_embd || !src->output) {
+        LLAMA_LOG_ERROR("%s: the target model does not match\n", __func__);
+        return false;
+    }
+    if (src->emb_split.n_hi) {
+        LLAMA_LOG_ERROR("%s: a split token embedding is not supported\n", __func__);
+        return false;
+    }
+
+    model->tok_embd  = src->tok_embd;
+    model->output    = src->output;
+    model->output_s  = src->output_s;
+    model->emb_split = src->emb_split;
+
+    for (const ggml_tensor * t : { src->tok_embd, src->output, src->emb_split.out_lo }) {
+        if (t == nullptr) {
+            continue;
+        }
+        if (const auto it = src->hdmd.rot.find(t); it != src->hdmd.rot.end()) {
+            model->hdmd.rot[t] = it->second;
+        }
+        if (const auto it = src->hdmd.inv.find(t); it != src->hdmd.inv.end()) {
+            model->hdmd.inv[t] = it->second;
+        }
+    }
+
+    LLAMA_LOG_INFO("%s: using the token embedding and output head of the target model\n", __func__);
+    return true;
+}
 
 //
 // llama_model_base

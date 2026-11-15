@@ -2739,6 +2739,12 @@ common_speculative_init_result::common_speculative_init_result(
 
         pimpl->model.reset(model_dft);
 
+        // a block-only MTP file uses the token embedding and output head of the target model
+        if (spec_mtp && !llama_model_borrow_io(model_dft, model_tgt)) {
+            LOG_ERR("%s: the MTP file does not fit the target model, '%s'\n", __func__, model_path.c_str());
+            return;
+        }
+
         llama_context * ctx_dft = llama_init_from_model(model_dft, cparams);
         if (ctx_dft == nullptr) {
             LOG_ERR("%s: failed to create MTP context\n", __func__);

@@ -658,6 +658,11 @@ extern "C" {
     // Returns the total number of parameters in the model
     LLAMA_API uint64_t llama_model_n_params(const struct llama_model * model);
 
+    // A block-only MTP file has no token embedding and no output head: it uses those of the target model.
+    // Binds them (with their split and Hadamard data) when model has neither, does nothing when it has both.
+    // Returns false if model has only one of them or if the two models do not match.
+    LLAMA_API bool llama_model_borrow_io(struct llama_model * model, const struct llama_model * src);
+
     // Returns true if the model contains an encoder that requires llama_encode() call
     LLAMA_API bool llama_model_has_encoder(const struct llama_model * model);
 

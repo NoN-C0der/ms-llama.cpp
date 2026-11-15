@@ -4,6 +4,7 @@
 #include "json.h"
 #include "llama-cpp.h"
 #include "log.h"
+#include "gguf.h"
 
 #include "../src/llama-ext.h"
 
@@ -257,6 +258,36 @@ common_device_memory_data_vec common_get_device_memory_data(
     return ret;
 }
 
+// a block-only MTP file (no token embedding, no output head) runs on those of the target model, so it cannot be measured on
+// its own: returns the bytes of its tensors plus its KV cache at n_ctx, or -1 for any other file
+static int64_t common_fit_block_only_mtp_bytes(const char * path, uint32_t n_ctx) {
+    gguf_init_params ip = { /*.no_alloc =*/ true, /*.ctx =*/ nullptr };
+    gguf_context * g = gguf_init_from_file(path, ip);
+    if (g == nullptr) {
+        return -1;
+    }
+    int64_t bytes = -1;
+    if (gguf_find_tensor(g, "token_embd.weight") < 0 && gguf_find_tensor(g, "output.weight") < 0) {
+        bytes = 0;
+        for (int64_t i = 0; i < gguf_get_n_tensors(g); i++) {
+            bytes += gguf_get_tensor_size(g, i);
+        }
+        // one attention layer: K and V in f16
+        const int64_t id_arch = gguf_find_key(g, "general.architecture");
+        if (id_arch >= 0) {
+            const std::string arch = gguf_get_val_str(g, id_arch);
+            const int64_t id_kv = gguf_find_key(g, (arch + ".attention.head_count_kv").c_str());
+            const int64_t id_k  = gguf_find_key(g, (arch + ".attention.key_length").c_str());
+            const int64_t id_v  = gguf_find_key(g, (arch + ".attention.value_length").c_str());
+            if (id_kv >= 0 && id_k >= 0 && id_v >= 0 && gguf_get_kv_type(g, id_kv) == GGUF_TYPE_UINT32) {
+                bytes += (int64_t) n_ctx * gguf_get_val_u32(g, id_kv) * (gguf_get_val_u32(g, id_k) + gguf_get_val_u32(g, id_v)) * 2;
+            }
+        }
+    }
+    gguf_free(g);
+    return bytes;
+}
+
 static void common_params_fit_impl(
         const char * path_model, struct llama_model_params * mparams, struct llama_context_params * cparams,
         float * tensor_split, struct llama_model_tensor_buft_override * tensor_buft_overrides,
@@ -299,37 +330,44 @@ static void common_params_fit_impl(
             LOG_TRC("%s: getting device memory data for the extra model at a context size of %" PRIu32 ":\n",
                 __func__, cparams->n_ctx);
 
-            dmds_t measured;
-            try {
-                measured = common_get_device_memory_data_impl(
-                    extra->path_model, extra->mparams, extra->cparams, devs_extra, ngl_extra, nct_extra, nex_extra, log_level);
-            } catch (const std::runtime_error & e) {
-                // the extra model is optional, fit the main model alone rather than giving up
-                LOG_WRN("%s: failed to measure the memory of the extra model, fitting without it: %s\n", __func__, e.what());
+            if (const int64_t b = common_fit_block_only_mtp_bytes(extra->path_model, cparams->n_ctx); b >= 0) {
+                LOG_TRC("%s: block-only MTP file, counting %" PRId64 " MiB on the first device\n", __func__, b / MiB);
                 dmds_extra = dmds_t(devs.size() + 1);
+                (devs.empty() ? dmds_extra.back() : dmds_extra[0]).mb.model = b;
                 n_ctx_extra = cparams->n_ctx;
-                return;
-            }
+            } else {
+                dmds_t measured;
+                try {
+                    measured = common_get_device_memory_data_impl(
+                        extra->path_model, extra->mparams, extra->cparams, devs_extra, ngl_extra, nct_extra, nex_extra, log_level);
+                } catch (const std::runtime_error & e) {
+                    // the extra model is optional, fit the main model alone rather than giving up
+                    LOG_WRN("%s: failed to measure the memory of the extra model, fitting without it: %s\n", __func__, e.what());
+                    dmds_extra = dmds_t(devs.size() + 1);
+                    n_ctx_extra = cparams->n_ctx;
+                    return;
+                }
 
-            dmds_extra = dmds_t(devs.size() + 1);
-            dmds_extra.back().mb = measured.back().mb;
-            for (size_t je = 0; je < devs_extra.size(); je++) {
-                for (size_t id = 0; id < devs.size(); id++) {
-                    if (devs_extra[je] == devs[id]) {
-                        dmds_extra[id].mb.model   += measured[je].mb.model;
-                        dmds_extra[id].mb.context += measured[je].mb.context;
-                        dmds_extra[id].mb.compute += measured[je].mb.compute;
-                        break;
+                dmds_extra = dmds_t(devs.size() + 1);
+                dmds_extra.back().mb = measured.back().mb;
+                for (size_t je = 0; je < devs_extra.size(); je++) {
+                    for (size_t id = 0; id < devs.size(); id++) {
+                        if (devs_extra[je] == devs[id]) {
+                            dmds_extra[id].mb.model   += measured[je].mb.model;
+                            dmds_extra[id].mb.context += measured[je].mb.context;
+                            dmds_extra[id].mb.compute += measured[je].mb.compute;
+                            break;
+                        }
                     }
                 }
-            }
-            if (extra->shares_model) {
-                for (llama_device_memory_data & dmd : dmds_extra) {
-                    dmd.mb.model = 0;
+                if (extra->shares_model) {
+                    for (llama_device_memory_data & dmd : dmds_extra) {
+                        dmd.mb.model = 0;
+                    }
                 }
-            }
 
-            n_ctx_extra = cparams->n_ctx;
+                n_ctx_extra = cparams->n_ctx;
+            }
         }
 
         for (size_t id = 0; id < dmds.size(); id++) {

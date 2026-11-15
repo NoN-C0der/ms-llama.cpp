@@ -82,13 +82,16 @@ void llama_model_qwen35::load_arch_tensors(llama_model_loader & ml) {
         n_output_hi = n_vocab - n_lo;
     }
 
-    tok_embd = create_tensor(tn(LLM_TENSOR_TOKEN_EMBD, "weight"), { n_embd, n_vocab_hi }, 0);
+    // an MTP-only file may hold just the block: it then uses the token embedding and output head of the target model
+    const int io_flags = (trunk_flags & TENSOR_NOT_REQUIRED) ? TENSOR_NOT_REQUIRED : 0;
+
+    tok_embd = create_tensor(tn(LLM_TENSOR_TOKEN_EMBD, "weight"), { n_embd, n_vocab_hi }, io_flags);
     if (emb_split.n_hi) {
         emb_split.tok_lo = create_tensor(tn(LLM_TENSOR_TOKEN_EMBD_LO, "weight"), { n_embd, emb_split.n_lo }, 0);
     }
 
     // output
-    output_norm = create_tensor(tn(LLM_TENSOR_OUTPUT_NORM, "weight"), { n_embd }, 0);
+    output_norm = create_tensor(tn(LLM_TENSOR_OUTPUT_NORM, "weight"), { n_embd }, io_flags);
     output = create_tensor(tn(LLM_TENSOR_OUTPUT, "weight"), { n_embd, n_output_hi }, TENSOR_NOT_REQUIRED);
     if (emb_split.n_hi && output) {
         throw std::runtime_error("a split token embedding needs a tied output");
@@ -104,8 +107,8 @@ void llama_model_qwen35::load_arch_tensors(llama_model_loader & ml) {
     cls_out   = create_tensor(tn(LLM_TENSOR_CLS_OUT, "weight"), { n_embd, hparams.n_embd_out() }, TENSOR_NOT_REQUIRED);
     cls_out_b = create_tensor(tn(LLM_TENSOR_CLS_OUT, "bias"),   { hparams.n_embd_out() },         TENSOR_NOT_REQUIRED);
 
-    // if output is NULL, init from the input tok embed
-    if (output == NULL) {
+    // if output is NULL, init from the input tok embed (a block-only MTP file has neither)
+    if (output == NULL && tok_embd != NULL) {
         output = create_tensor(tn(LLM_TENSOR_TOKEN_EMBD, "weight"), { n_embd, n_vocab_hi }, TENSOR_DUPLICATED);
         if (emb_split.n_hi) {
             emb_split.out_lo = create_tensor(tn(LLM_TENSOR_TOKEN_EMBD_LO, "weight"), { n_embd, emb_split.n_lo }, TENSOR_DUPLICATED);
@@ -568,6 +571,11 @@ llama_model_qwen35::graph_mtp::graph_mtp(const llama_model & model, const llm_gr
     // layer is stored immediately after the main layers in model.layers[].
     const int il = hparams.n_layer();
     const auto & layer = model.layers[il];
+
+    if (!model.tok_embd || !model.output) {
+        // e.g. a memory estimate of the file alone, before llama_model_borrow_io
+        throw std::runtime_error("a block-only MTP file needs the token embedding and output head of a target model (llama_model_borrow_io)");
+    }
 
     GGML_ASSERT(layer.nextn.eh_proj && "MTP block missing nextn.eh_proj");
     GGML_ASSERT(layer.nextn.enorm   && "MTP block missing nextn.enorm");
