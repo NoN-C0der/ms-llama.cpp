@@ -177,7 +177,13 @@ static __device__ __forceinline__ uint32_t mmms_state(const uint32_t (&wn)[nw]) 
 
 // f16 bits of 1536 + v for state s: 0x6600 + v is in [0x6400, 0x6800), where the f16 spacing is 1
 static __device__ __forceinline__ uint32_t mmms_value_f16(const uint32_t s) {
-    return __dp4a(GGML_MS_C_A*s + GGML_MS_C_B, 0x01010101u, 0x6600u - 510u);
+    const uint32_t x = GGML_MS_C_A*s + GGML_MS_C_B;
+#if __CUDA_ARCH__ >= GGML_CUDA_CC_DP4A
+    return __dp4a(x, 0x01010101u, 0x6600u - 510u);
+#else
+    // no dp4a (the kernels do not run there, they only have to compile)
+    return (x & 0xFF) + ((x >> 8) & 0xFF) + ((x >> 16) & 0xFF) + (x >> 24) + 0x6600u - 510u;
+#endif // __CUDA_ARCH__ >= GGML_CUDA_CC_DP4A
 }
 
 // words per block: the stream [s0][qs] is 32 + 512*k bits, the word i >= 1 is the big endian word i of the block
