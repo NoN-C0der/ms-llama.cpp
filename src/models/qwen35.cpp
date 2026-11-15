@@ -79,9 +79,6 @@ void llama_model_qwen35::load_arch_tensors(llama_model_loader & ml) {
         if (n_lo <= 0 || n_lo >= n_vocab) {
             throw std::runtime_error("output_lo.weight: bad number of rows");
         }
-        if (has_mtp) {
-            throw std::runtime_error("a split head does not support the MTP block");
-        }
         n_output_hi = n_vocab - n_lo;
     }
 
@@ -723,7 +720,11 @@ llama_model_qwen35::graph_mtp::graph_mtp(const llama_model & model, const llm_gr
     ggml_tensor * head_w = layer.nextn.shared_head_head ? layer.nextn.shared_head_head : model.output;
     ggml_tensor * head_s = layer.nextn.shared_head_head ? layer.nextn.shared_head_head_s : model.output_s;
     GGML_ASSERT(head_w && "QWEN35 MTP: missing LM head (nextn.shared_head_head or model.output)");
-    cur = build_lora_mm(head_w, cur, head_s);
+    if (!layer.nextn.shared_head_head && model.emb_split.out_lo) {
+        cur = build_split_head(model.output, model.emb_split, cur); // the target's split head, as in the main graph
+    } else {
+        cur = build_lora_mm(head_w, cur, head_s);
+    }
     cb(cur, "result_output", -1);
 
     res->t_logits = cur;

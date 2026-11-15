@@ -2317,6 +2317,11 @@ void llama_model_base::load_tensors_hadamard() {
                 }
             }
             if (weight == nullptr) {
+                // a NextN (MTP) layer is only loaded when MTP is used, its rotations are not needed otherwise
+                int il = -1;
+                if (hparams.n_layer_nextn > 0 && sscanf(weight_name.c_str(), "blk.%d.", &il) == 1 && il >= (int) hparams.n_layer()) {
+                    continue;
+                }
                 throw std::runtime_error(format("prism.hadamard weight not found: %s", weight_name.c_str()));
             }
             if (weight->ne[0] % block_size != 0) {
@@ -4070,6 +4075,7 @@ ggml_backend_dev_t llama_model_get_device(const struct llama_model * model, int 
 void llama_model_set_attn_rot(struct llama_model * model, bool value) {
     model->attn_rot = value;
 }
+
 
 //
 // llama_model_base
