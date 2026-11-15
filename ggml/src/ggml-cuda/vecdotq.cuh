@@ -1460,6 +1460,21 @@ static __device__ __forceinline__ int ms_c_dp4a(const uint32_t x, const int y, c
     asm("dp4a.u32.s32 %0, %1, %2, %3;" : "=r"(r) : "r"(x), "r"(y), "r"(c));
     return r;
 }
+
+#define MS_C_DP2A_AVAILABLE
+// the two int16 of a times bytes 0, 1 of b as int8
+static __device__ __forceinline__ int ms_c_dp2a_lo_s8(const int a, const uint32_t b, const int c) {
+    int r;
+    asm("dp2a.lo.s32.s32 %0, %1, %2, %3;" : "=r"(r) : "r"(a), "r"(b), "r"(c));
+    return r;
+}
+
+// the two int16 of a times bytes 2, 3 of b as uint8
+static __device__ __forceinline__ int ms_c_dp2a_hi_u8(const int a, const uint32_t b, const int c) {
+    int r;
+    asm("dp2a.hi.s32.u32 %0, %1, %2, %3;" : "=r"(r) : "r"(a), "r"(b), "r"(c));
+    return r;
+}
 #else
 // signed x signed dp4a: the bytes of x are offset by -128, so the -510 becomes +2
 static constexpr int ms_c_dp4a_bias = 2;
@@ -1526,8 +1541,8 @@ static __device__ __forceinline__ float vec_dot_ms_c_q8_1(
     return __half2float(bq->d) * __low2float(bq8->ds) * sumi;
 }
 
-// vec_dot_ms_c_y16 for ncols activation columns (by16 + c*stride_col): the trellis is decoded once for all of them,
-// the sums of each column are formed in the same order, so every column gets the same result as vec_dot_ms_c_y16
+// vec_dot_ms_c_y16 for ncols activation columns (by16 + c*stride_col): the trellis is decoded once for all of them.
+// The integer sums are exact and the float math is that of vec_dot_ms_c_y16, so every column gets the same result as there.
 template <typename block_t, int ncols>
 static __device__ __forceinline__ void vec_dot_ms_c_y16_cols(
     const void * __restrict__ vbq, const block_y16 * __restrict__ by16, const int stride_col, const int & kbx, const int & iqs,
@@ -1544,6 +1559,43 @@ static __device__ __forceinline__ void vec_dot_ms_c_y16_cols(
         w[i + 1] = ms_c_bswap(get_int_b4(bq->qs, k*iqs + i));
     }
 
+#ifdef MS_C_DP2A_AVAILABLE
+    // 64*v = 256*(v >> 2) + 64*(v & 3): byte 1 of 64*v is v >> 2 as int8, byte 0 is 64*(v & 3) as uint8.
+    // p[i] holds these parts of the weights 2i and 2i+1 (bytes 0, 1: v >> 2, bytes 2, 3: 64*(v & 3)),
+    // so one dp2a per part, pair of weights and column gives the exact sum of v*y.
+    uint32_t p[QK8_1/2];
+#pragma unroll
+    for (int i = 0; i < QK8_1/2; ++i) {
+        uint32_t v64[2];
+#pragma unroll
+        for (int e = 0; e < 2; ++e) {
+            const int      b  = 18 + k*(2*i + e);
+            const uint64_t ww = ((uint64_t) w[b/32] << 32) | w[min(b/32 + 1, k)];
+            const uint32_t s  = (ww >> (50 - b%32)) & GGML_MS_STATE_MASK;
+            v64[e] = ms_c_dp4a(GGML_MS_C_A*s + GGML_MS_C_B, 0x40404040, 64*ms_c_dp4a_bias);
+        }
+        p[i] = __byte_perm(v64[0], v64[1], 0x4051);
+    }
+
+#pragma unroll
+    for (int c = 0; c < ncols; ++c) {
+        const block_y16 * by = by16 + c*stride_col + iqs;
+        int sumh = 0; // sum of (v >> 2)*y
+        int suml = 0; // sum of 64*(v & 3)*y
+#pragma unroll
+        for (int i4 = 0; i4 < QK8_1/8; ++i4) {
+            const int4 q4 = ((const int4 *) by->qs)[i4];
+            const int  q[4] = {q4.x, q4.y, q4.z, q4.w};
+#pragma unroll
+            for (int j = 0; j < 4; ++j) {
+                sumh = ms_c_dp2a_lo_s8(q[j], p[4*i4 + j], sumh);
+                suml = ms_c_dp2a_hi_u8(q[j], p[4*i4 + j], suml);
+            }
+        }
+        const int sumi = 4*sumh + (suml >> 6);
+        out[c] = __half2float(bq->d) * by->d * sumi;
+    }
+#else
     int v[32];
 #pragma unroll
     for (int j = 0; j < 32; ++j) {
@@ -1565,6 +1617,7 @@ static __device__ __forceinline__ void vec_dot_ms_c_y16_cols(
         }
         out[c] = __half2float(bq->d) * by->d * sumi;
     }
+#endif // MS_C_DP2A_AVAILABLE
 }
 
 // as vec_dot_ms_c_q8_1 with 16 bit activations: 32 weights (iqs = 0..15) of an MS_C block times block_y16 iqs.
@@ -1588,8 +1641,12 @@ static __device__ __forceinline__ float vec_dot_ms_c_y16(
 
     int q[QK8_1/2];
 #pragma unroll
-    for (int i = 0; i < QK8_1/2; ++i) {
-        q[i] = get_int_b4(by->qs, i);
+    for (int i4 = 0; i4 < QK8_1/8; ++i4) {
+        const int4 q4 = ((const int4 *) by->qs)[i4];
+        q[4*i4 + 0] = q4.x;
+        q[4*i4 + 1] = q4.y;
+        q[4*i4 + 2] = q4.z;
+        q[4*i4 + 3] = q4.w;
     }
 
     int sumi = 0;

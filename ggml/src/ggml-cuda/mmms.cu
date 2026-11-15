@@ -545,6 +545,343 @@ mul_mat_ms_c_fixup(const mmms_args a) {
     }
 }
 
+// Small batches (MMMS_SMALL_MIN_COLS .. MMMS_SMALL_MAX_COLS columns, below that the exact mat-vec is cheaper): one mma tile
+// holds all columns, so the weights are decoded once and the column count costs nearly nothing.
+// Same values as above: w = f16(v*d), y = f16(y*scale), f32 sums.
+// The weights are the B operand (n8 = 8 rows per block), the columns the A operand (rows 8..15 of A are zero), so a block
+// streams 8 rows; its warps split them into super-chunks of MMMS_SC k values (warp w: super-chunks w, w + nwarps, ...).
+// In a super-chunk thread t decodes the MMMS_SC/4 consecutive states MMMS_SC/4*t .. of row g = lane/4, so the 4 threads of
+// a row read contiguous bytes, as runs u of 16 states that feed 4 mma steps each (step s: states 4*s + 0..3 of the run, as
+// in mmms_decode_step). y is f16 with k = MMMS_SC/4*t + 16*u + i of a super-chunk stored at 64*u + 16*t + i: the B fragments
+// of run u are 16 consecutive values and the 4 threads of a column read adjacent ones.
+// The loads use L2::256B (the other threads of the row and the next warps read the rest of the fetched bytes) and the words
+// of the next super-chunk of a warp are loaded before the current one is decoded.
+// When the row tiles fill few waves of the GPU the blocks (tile, part) also split K, the last block of a tile adds the
+// parts in part order (deterministic).
+#define MMMS_SMALL_MIN_COLS 4
+#define MMMS_SMALL_MAX_COLS 8
+#define MMMS_SMALL_NWARPS   8
+#define MMMS_SC             256  // k values per super-chunk
+#define MMMS_SMALL_CONVERT_SLICE 2048 // k values per block of mmms_small_convert_y
+
+// y as f16 [ne12*ne13][ne11][ne10] with the column scale of mmms_convert_y, in the order above; block (col, part) converts
+// k values part*MMMS_SMALL_CONVERT_SLICE .. of col and reads the whole column for the scale. Block (0, 0) zeroes the counters.
+template <bool aligned>
+static __global__ void __launch_bounds__(MMMS_CONVERT_NT)
+mmms_small_convert_y(
+        const float * __restrict__ x, half2 * __restrict__ y, float * __restrict__ inv_scale, int * __restrict__ counters, const int ncounters,
+        const int ne10, const int ne11, const int ne12, const int64_t s11, const int64_t s12, const int64_t s13) {
+    const int64_t col = blockIdx.x;
+    const int     i11 = col % ne11;
+    const int     i12 = (col / ne11) % ne12;
+    const int64_t i13 = (col / ne11) / ne12;
+    const int     tid = threadIdx.x;
+
+    if (col == 0 && blockIdx.y == 0) {
+        for (int i = tid; i < ncounters; i += MMMS_CONVERT_NT) {
+            counters[i] = 0;
+        }
+    }
+
+    const float * xc = x + i13*s13 + i12*s12 + i11*s11;
+
+    float amax = 0.0f;
+    for (int i = 2*tid; i < ne10; i += 2*MMMS_CONVERT_NT) {
+        const float2 v = aligned ? *(const float2 *) (xc + i) : make_float2(xc[i], xc[i + 1]);
+        amax = fmaxf(amax, fmaxf(fabsf(v.x), fabsf(v.y)));
+    }
+    amax = warp_reduce_max(amax);
+    __shared__ float amax_warp[MMMS_CONVERT_NT/WARP_SIZE];
+    if (tid % WARP_SIZE == 0) {
+        amax_warp[tid / WARP_SIZE] = amax;
+    }
+    __syncthreads();
+    amax = 0.0f;
+#pragma unroll
+    for (int w = 0; w < MMMS_CONVERT_NT/WARP_SIZE; ++w) {
+        amax = fmaxf(amax, amax_warp[w]);
+    }
+
+    // the scale of mmms_convert_y
+    int e = 0;
+    if (amax > 0.0f && isfinite(amax)) {
+        frexpf(amax, &e);
+        e = min(max(6 - e, -100), 100);
+    } else {
+        e = 0;
+    }
+    const float scale = ldexpf(1.0f, e/2)*ldexpf(1.0f, e - e/2);
+    if (blockIdx.y == 0 && tid == 0) {
+        inv_scale[col] = 1.0f/scale;
+    }
+
+    half2 * yc = y + col*(ne10/2);
+    const int i1 = min(ne10, (int) (blockIdx.y + 1)*MMMS_SMALL_CONVERT_SLICE);
+    for (int q = blockIdx.y*MMMS_SMALL_CONVERT_SLICE + 2*tid; q < i1; q += 2*MMMS_CONVERT_NT) {
+        const int r = q % MMMS_SC;
+        const int i = q - r + MMMS_SC/4*((r/16) % 4) + 16*(r/64) + r % 16;
+        const float2 v = aligned ? *(const float2 *) (xc + i) : make_float2(xc[i], xc[i + 1]);
+        yc[q/2] = __floats2half2_rn(v.x*scale, v.y*scale);
+    }
+}
+
+// the words of the MMMS_SC/4 states of thread t in super-chunk h of a block start at bit 18 of stream word
+// k*MMMS_SC/128*t + k*MMMS_SC/32*h of the block
+template <int k>
+struct mmms_sc_block {
+    static constexpr int nw = (MMMS_SC/4*k + 31)/32 + 1;
+};
+
+template <int k>
+static __device__ __forceinline__ void mmms_sc_load(
+        const char * __restrict__ xr, const int ib, const int base, uint32_t (&w)[mmms_sc_block<k>::nw], half2 & d) {
+    using bl = mmms_block<k>;
+    const uint32_t * wp = (const uint32_t *) (xr + (int64_t) ib*bl::bs) + base;
+#pragma unroll
+    for (int i = 0; i < mmms_sc_block<k>::nw; ++i) {
+#if defined(TURING_MMA_AVAILABLE)
+        asm volatile("ld.global.L2::256B.u32 %0, [%1];" : "=r"(w[i]) : "l"(wp + i));
+#else
+        w[i] = wp[i];
+#endif // defined(TURING_MMA_AVAILABLE)
+    }
+    d = mmms_load_d(xr, ib, bl::bs);
+}
+
+// code bits of run u (states 16*u .. 16*u + 15 of the thread), MSB first from its first state; first: the words start at word 0
+template <int k, int u>
+static __device__ __forceinline__ void mmms_sc_prep(
+        const uint32_t (&w)[mmms_sc_block<k>::nw], const bool first, uint32_t (&wn)[mmms_block<k>::nwn]) {
+    constexpr int nw  = mmms_sc_block<k>::nw;
+    constexpr int nwn = mmms_block<k>::nwn;
+    constexpr int off = 32 - GGML_MS_L + 16*k*u;
+    constexpr int o   = off / 32;
+    constexpr int sh  = off % 32;
+    uint32_t wb[nwn + 1];
+#pragma unroll
+    for (int i = 0; i <= nwn; ++i) {
+        const int j = o + i < nw ? o + i : nw - 1; // a clamped word only fills bits after the last state
+        wb[i] = __byte_perm(w[j], 0, 0x0123);
+        if (j == 0) {
+            wb[i] = first ? w[0] >> 16 : wb[i]; // word 0 of the block holds d (low) and s0 (high)
+        }
+    }
+#pragma unroll
+    for (int i = 0; i < nwn; ++i) {
+        wn[i] = sh == 0 ? wb[i] : __funnelshift_l(wb[i + 1], wb[i], sh);
+    }
+}
+
+// thread (g, t): row g of the tile (B operand), column g (A operand); its sums are column g, rows 2*t and 2*t + 1.
+// grid: (row tiles * ksplit, 1, ne12*ne13), ksplit in a.nblocks
+template <int k>
+static __global__ void __launch_bounds__(MMMS_SMALL_NWARPS*WARP_SIZE)
+mul_mat_ms_c_small(const mmms_args a, int * __restrict__ counters) {
+#if defined(TURING_MMA_AVAILABLE)
+    using bl  = mmms_block<k>;
+    using sbl = mmms_sc_block<k>;
+    constexpr int nwarps = MMMS_SMALL_NWARPS;
+    constexpr int scpb   = QK_MS/MMMS_SC; // super-chunks per block
+
+    const int lane = threadIdx.x;
+    const int warp = threadIdx.y;
+    const int g    = lane / 4;
+    const int t    = lane % 4;
+
+    // the parts of a tile are adjacent blocks
+    const int ksplit = a.nblocks;
+    const int ks     = blockIdx.x % ksplit;
+    const int tm     = blockIdx.x / ksplit;
+    const int iz     = blockIdx.z;
+    const int i12    = iz % a.ne12;
+    const int i13    = iz / a.ne12;
+    const int row0   = 8*tm;
+
+    const char * xr = a.x + (i13/a.r3)*a.s03 + (i12/a.r2)*a.s02 + min(row0 + g, a.ne01 - 1)*a.s01;
+
+    // column g of y (the threads of the columns >= ne1 use zeros)
+    const bool    has_col = g < a.ne1;
+    const uint4 * yc      = (const uint4 *) (a.y + ((int64_t) iz*a.ne1 + (has_col ? g : 0))*(a.ne00/2));
+
+    const int nsc = a.ne00/MMMS_SC;
+    const int sc0 = (int) ((int64_t) ks*nsc/ksplit);
+    const int sc1 = (int) ((int64_t) (ks + 1)*nsc/ksplit);
+
+    float acc[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+
+    uint32_t wp[sbl::nw];
+    half2    dp;
+    auto load_sc = [&](const int isc) {
+        mmms_sc_load<k>(xr, isc / scpb, k*MMMS_SC/128*t + k*MMMS_SC/32*(isc % scpb), wp, dp);
+    };
+    if (sc0 + warp < sc1) {
+        load_sc(sc0 + warp);
+    }
+
+    for (int isc = sc0 + warp; isc < sc1; isc += nwarps) {
+        const bool first = t == 0 && isc % scpb == 0;
+
+        uint32_t w[sbl::nw];
+#pragma unroll
+        for (int i = 0; i < sbl::nw; ++i) {
+            w[i] = wp[i];
+        }
+        const half2 d = dp;
+        if (isc + nwarps < sc1) {
+            load_sc(isc + nwarps);
+        }
+
+        static_for<0, MMMS_SC/64>([&](auto u_) {
+            constexpr int u = decltype(u_)::value;
+            uint4 y0 = make_uint4(0, 0, 0, 0);
+            uint4 y1 = make_uint4(0, 0, 0, 0);
+            if (has_col) {
+                const int i8 = (isc*MMMS_SC + 64*u + 16*t)/8;
+                y0 = yc[i8 + 0];
+                y1 = yc[i8 + 1];
+            }
+            const uint32_t b[8] = {y0.x, y0.y, y0.z, y0.w, y1.x, y1.y, y1.z, y1.w};
+
+            uint32_t wn[bl::nwn];
+            mmms_sc_prep<k, u>(w, first, wn);
+            static_for<0, 4>([&](auto s_) {
+                constexpr int s = decltype(s_)::value;
+                uint32_t f0, f1;
+                mmms_decode_step<k, s>(wn, d, f0, f1);
+                mmms_mma_f32(acc, b[2*s + 0], 0, b[2*s + 1], 0, f0, f1);
+            });
+        });
+    }
+
+    // sums of the warps in warp order
+    __shared__ float red[nwarps - 1][2][WARP_SIZE];
+    if (warp > 0) {
+        red[warp - 1][0][lane] = acc[0];
+        red[warp - 1][1][lane] = acc[1];
+    }
+    __syncthreads();
+    if (warp > 0) {
+        return;
+    }
+#pragma unroll
+    for (int i = 0; i < nwarps - 1; ++i) {
+        acc[0] += red[i][0][lane];
+        acc[1] += red[i][1][lane];
+    }
+
+    if (ksplit > 1) {
+        // part ks of the tile, then the last block of the tile adds the parts in order
+        const int64_t tile = (int64_t) iz*(gridDim.x/ksplit) + tm;
+        float * part = a.part + tile*ksplit*(2*WARP_SIZE);
+        part[(2*ks + 0)*WARP_SIZE + lane] = acc[0];
+        part[(2*ks + 1)*WARP_SIZE + lane] = acc[1];
+        __threadfence();
+        int last = 0;
+        if (lane == 0) {
+            last = atomicAdd(counters + tile, 1) == ksplit - 1;
+        }
+        if (!__shfl_sync(0xFFFFFFFF, last, 0)) {
+            return;
+        }
+        __threadfence();
+        float sum0 = 0.0f;
+        float sum1 = 0.0f;
+        for (int i = 0; i < ksplit; ++i) {
+            sum0 += __ldcg(part + (2*i + 0)*WARP_SIZE + lane);
+            sum1 += __ldcg(part + (2*i + 1)*WARP_SIZE + lane);
+        }
+        acc[0] = sum0;
+        acc[1] = sum1;
+    }
+
+    if (has_col) {
+        float * dz = a.dst + i13*a.s3 + i12*a.s2 + g*a.s1;
+        const float is = a.inv_scale[(int64_t) iz*a.ne1 + g];
+#pragma unroll
+        for (int l = 0; l < 2; ++l) {
+            const int row = row0 + 2*t + l;
+            if (row < a.ne01) {
+                dz[row] = acc[l]*is;
+            }
+        }
+    }
+#else
+    GGML_UNUSED_VARS(a, counters);
+    NO_DEVICE_CODE;
+#endif // defined(TURING_MMA_AVAILABLE)
+}
+
+template <int k>
+static void mul_mat_ms_c_small_run(ggml_backend_cuda_context & ctx, mmms_args a, const ggml_tensor * src1) {
+    GGML_TENSOR_LOCALS(int64_t, ne1, src1, ne);
+    GGML_TENSOR_LOCALS(size_t,  nb1, src1, nb);
+    cudaStream_t stream = ctx.stream();
+
+    const int id = ggml_cuda_get_device();
+    static int occupancy[GGML_CUDA_MAX_DEVICES] = {0};
+    if (occupancy[id] == 0) {
+        CUDA_CHECK(cudaOccupancyMaxActiveBlocksPerMultiprocessor(&occupancy[id], mul_mat_ms_c_small<k>, MMMS_SMALL_NWARPS*WARP_SIZE, 0));
+        occupancy[id] = std::max(occupancy[id], 1);
+    }
+
+    // K split over blocks only when the row tiles fill less than a few waves: whole rows per block stream best
+    const int ntiles_m = (a.ne01 + 7)/8;
+    const int ntiles   = ntiles_m*a.ne12*a.ne13;
+    const int nslots   = ggml_cuda_info().devices[id].nsm*occupancy[id];
+    const int nsc      = a.ne00/MMMS_SC;
+    const int ksplit   = std::max(1, std::min((4*nslots + ntiles - 1)/ntiles, nsc/MMMS_SMALL_NWARPS));
+
+    ggml_cuda_pool_alloc<int>   counters(ctx.pool(), ksplit > 1 ? ntiles : 1);
+    ggml_cuda_pool_alloc<float> part(ctx.pool(), ksplit > 1 ? (size_t) ntiles*ksplit*2*WARP_SIZE : 1);
+    a.part    = part.get();
+    a.nblocks = ksplit;
+
+    {
+        const bool aligned = (uintptr_t) src1->data % 8 == 0 && nb11 % 8 == 0 && nb12 % 8 == 0 && nb13 % 8 == 0;
+        const dim3 grid(ne12*ne13*ne11, (ne10 + MMMS_SMALL_CONVERT_SLICE - 1)/MMMS_SMALL_CONVERT_SLICE);
+        const int ncounters = ksplit > 1 ? ntiles : 0;
+        if (aligned) {
+            mmms_small_convert_y<true><<<grid, MMMS_CONVERT_NT, 0, stream>>>((const float *) src1->data, (half2 *) a.y,
+                (float *) a.inv_scale, counters.get(), ncounters, ne10, ne11, ne12, nb11/sizeof(float), nb12/sizeof(float), nb13/sizeof(float));
+        } else {
+            mmms_small_convert_y<false><<<grid, MMMS_CONVERT_NT, 0, stream>>>((const float *) src1->data, (half2 *) a.y,
+                (float *) a.inv_scale, counters.get(), ncounters, ne10, ne11, ne12, nb11/sizeof(float), nb12/sizeof(float), nb13/sizeof(float));
+        }
+        CUDA_CHECK(cudaGetLastError());
+    }
+
+    const dim3 grid(ntiles_m*ksplit, 1, a.ne12*a.ne13);
+    const dim3 block(WARP_SIZE, MMMS_SMALL_NWARPS, 1);
+    mul_mat_ms_c_small<k><<<grid, block, 0, stream>>>(a, counters.get());
+}
+
+static void ggml_cuda_mul_mat_ms_small(ggml_backend_cuda_context & ctx, const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst) {
+    GGML_TENSOR_BINARY_OP_LOCALS;
+
+    GGML_ASSERT(ne00 % MMMS_SC == 0);
+
+    ggml_cuda_pool_alloc<half2> y(ctx.pool(), ne12*ne13*ne11*ne10/2);
+    ggml_cuda_pool_alloc<float> inv_scale(ctx.pool(), ne12*ne13*ne11);
+
+    mmms_args a = {};
+    a.x = (const char *) src0->data; a.y = y.get(); a.inv_scale = inv_scale.get(); a.dst = (float *) dst->data; a.part = nullptr;
+    a.ne00 = ne00; a.ne01 = ne01; a.s01 = nb01; a.s02 = nb02; a.s03 = nb03;
+    a.ne1 = ne11; a.ne11_pad = ne11; a.ne12 = ne12; a.ne13 = ne13; a.r2 = ne12/ne02; a.r3 = ne13/ne03;
+    a.s1 = nb1/sizeof(float); a.s2 = nb2/sizeof(float); a.s3 = nb3/sizeof(float);
+
+    switch (src0->type) {
+        case GGML_TYPE_MS_C1: mul_mat_ms_c_small_run<1>(ctx, a, src1); break;
+        case GGML_TYPE_MS_C2: mul_mat_ms_c_small_run<2>(ctx, a, src1); break;
+        case GGML_TYPE_MS_C3: mul_mat_ms_c_small_run<3>(ctx, a, src1); break;
+        case GGML_TYPE_MS_C4: mul_mat_ms_c_small_run<4>(ctx, a, src1); break;
+        case GGML_TYPE_MS_C5: mul_mat_ms_c_small_run<5>(ctx, a, src1); break;
+        case GGML_TYPE_MS_C6: mul_mat_ms_c_small_run<6>(ctx, a, src1); break;
+        default:
+            GGML_ABORT("fatal error");
+    }
+    CUDA_CHECK(cudaGetLastError());
+}
+
 bool ggml_cuda_should_use_mmms(enum ggml_type type, int cc, int64_t ne11) {
     switch (type) {
         case GGML_TYPE_MS_C1:
@@ -561,7 +898,8 @@ bool ggml_cuda_should_use_mmms(enum ggml_type type, int cc, int64_t ne11) {
     return false;
 #endif // GGML_CUDA_FORCE_CUBLAS
     static const bool disabled = getenv("GGML_CUDA_DISABLE_MMMS") != nullptr;
-    return !disabled && GGML_CUDA_CC_IS_NVIDIA(cc) && turing_mma_available(cc) && ne11 > MMVQ_MAX_BATCH_SIZE;
+    const bool small = ne11 >= MMMS_SMALL_MIN_COLS && ne11 <= MMMS_SMALL_MAX_COLS;
+    return !disabled && GGML_CUDA_CC_IS_NVIDIA(cc) && turing_mma_available(cc) && (ne11 > MMVQ_MAX_BATCH_SIZE || small);
 }
 
 template <int k, int nwarps, int bn, bool acc_f16>
@@ -650,6 +988,11 @@ void ggml_cuda_mul_mat_ms(ggml_backend_cuda_context & ctx, const ggml_tensor * s
     GGML_ASSERT(nb0  == sizeof(float));
     GGML_ASSERT(ne00 % QK_MS == 0 && ne00 == ne10);
     GGML_ASSERT(ne12 % ne02 == 0 && ne13 % ne03 == 0);
+
+    if (ne11 <= MMMS_SMALL_MAX_COLS) {
+        ggml_cuda_mul_mat_ms_small(ctx, src0, src1, dst);
+        return;
+    }
 
     cudaStream_t stream = ctx.stream();
 

@@ -1647,12 +1647,15 @@ struct ggml_cuda_mm_fusion_args_device {
     int64_t y_res = 0; // MS_C: the block_y16 data of y starts y_res q8_1 blocks after y
 };
 
-// 16 bit activations of the MS_C mat-vec: 32 values with a float scale
+// 16 bit activations of the MS_C mat-vec: 32 values with a float scale.
+// 80 bytes, so that the values of each block are 16 byte aligned (vector loads): the block_y16 data starts at a multiple of
+// 4 q8_1 blocks (the rows of y are padded to MATRIX_ROW_PADDING).
 struct block_y16 {
-    float   d;
     int16_t qs[QK8_1];
+    float   d;
+    float   pad[3];
 };
-static_assert(sizeof(block_y16) == sizeof(float) + QK8_1*sizeof(int16_t), "wrong block_y16 size");
+static_assert(sizeof(block_y16) == 5*16, "wrong block_y16 size");
 
 struct ggml_cuda_kernel_launch_params {
     dim3 block_nums;
