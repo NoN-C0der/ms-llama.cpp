@@ -1115,7 +1115,8 @@ struct llm_graph_context {
               ggml_tensor * w_s = nullptr) const;
 
     // split output head (w holds the high rows, split.out_lo the others): logits of both tables, in token order
-    ggml_tensor * build_split_head(ggml_tensor * w, const llama_emb_split & split, ggml_tensor * cur) const;
+    // hi_only: only the high rows are computed, the other tokens get -inf (a cheaper head for drafts)
+    ggml_tensor * build_split_head(ggml_tensor * w, const llama_emb_split & split, ggml_tensor * cur, bool hi_only = false) const;
 
     // do mat_mul_id, while optionally apply lora and per-expert scale
     // if slots is set, the experts are read from the MoE cache at these slots (see build_moe_cache_slots)

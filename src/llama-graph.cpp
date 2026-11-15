@@ -1680,10 +1680,17 @@ ggml_tensor * llm_graph_context::build_lora_mm(
     return res;
 }
 
-ggml_tensor * llm_graph_context::build_split_head(ggml_tensor * w, const llama_emb_split & split, ggml_tensor * cur) const {
+ggml_tensor * llm_graph_context::build_split_head(ggml_tensor * w, const llama_emb_split & split, ggml_tensor * cur, bool hi_only) const {
     // build_hadamard_input makes the transformed input once per transform, and both tables usually have the same one
     ggml_tensor * hi = build_lora_mm(w, cur);
-    ggml_tensor * lo = build_lora_mm(split.out_lo, cur);
+    ggml_tensor * lo;
+    if (hi_only) {
+        // -inf for the low rows: 0*x - inf of one logit per output, repeated
+        ggml_tensor * x = ggml_cont(ctx0, ggml_view_2d(ctx0, hi, 1, hi->ne[1], hi->nb[1], 0));
+        lo = ggml_repeat_4d(ctx0, ggml_scale_bias(ctx0, x, 0.0f, -INFINITY), split.out_lo->ne[1], hi->ne[1], 1, 1);
+    } else {
+        lo = build_lora_mm(split.out_lo, cur);
+    }
 
     // logits in stored row order
     ggml_tensor * st = ggml_concat(ctx0, hi, lo, 0);

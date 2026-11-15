@@ -1,6 +1,9 @@
 #include "models.h"
 #include "llama-memory-recurrent.h"
 
+#include <cstdlib>
+#include <cstring>
+
 void llama_model_qwen35::load_arch_hparams(llama_model_loader & ml) {
     ml.get_key(LLM_KV_ATTENTION_LAYERNORM_RMS_EPS,       hparams.f_norm_rms_eps);
     ml.get_key_or_arr(LLM_KV_ROPE_DIMENSION_SECTIONS,    hparams.rope_sections, 4, true);
@@ -729,7 +732,10 @@ llama_model_qwen35::graph_mtp::graph_mtp(const llama_model & model, const llm_gr
     ggml_tensor * head_s = layer.nextn.shared_head_head ? layer.nextn.shared_head_head_s : model.output_s;
     GGML_ASSERT(head_w && "QWEN35 MTP: missing LM head (nextn.shared_head_head or model.output)");
     if (!layer.nextn.shared_head_head && model.emb_split.out_lo) {
-        cur = build_split_head(model.output, model.emb_split, cur); // the target's split head, as in the main graph
+        // the target's split head, as in the main graph; drafts come from its high rows (the most used tokens) only, which
+        // is faster for about the same acceptance; LLAMA_MTP_HEAD=full drafts from all rows
+        static const bool head_hi = [] { const char * e = getenv("LLAMA_MTP_HEAD"); return e == nullptr || strcmp(e, "full") != 0; }();
+        cur = build_split_head(model.output, model.emb_split, cur, head_hi);
     } else {
         cur = build_lora_mm(head_w, cur, head_s);
     }
