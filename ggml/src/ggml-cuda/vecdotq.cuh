@@ -1526,6 +1526,47 @@ static __device__ __forceinline__ float vec_dot_ms_c_q8_1(
     return __half2float(bq->d) * __low2float(bq8->ds) * sumi;
 }
 
+// vec_dot_ms_c_y16 for ncols activation columns (by16 + c*stride_col): the trellis is decoded once for all of them,
+// the sums of each column are formed in the same order, so every column gets the same result as vec_dot_ms_c_y16
+template <typename block_t, int ncols>
+static __device__ __forceinline__ void vec_dot_ms_c_y16_cols(
+    const void * __restrict__ vbq, const block_y16 * __restrict__ by16, const int stride_col, const int & kbx, const int & iqs,
+    float * __restrict__ out) {
+
+    constexpr int k = 8*sizeof(block_t::qs)/QK_MS; // bits per weight
+
+    const block_t * bq = (const block_t *) vbq + kbx;
+
+    uint32_t w[k + 1];
+    w[0] = iqs == 0 ? bq->s0 : ms_c_bswap(get_int_b4(bq->qs, k*iqs - 1));
+#pragma unroll
+    for (int i = 0; i < k; ++i) {
+        w[i + 1] = ms_c_bswap(get_int_b4(bq->qs, k*iqs + i));
+    }
+
+    int v[32];
+#pragma unroll
+    for (int j = 0; j < 32; ++j) {
+        const int      b  = 18 + k*j;
+        const uint64_t ww = ((uint64_t) w[b/32] << 32) | w[min(b/32 + 1, k)];
+        const uint32_t s  = (ww >> (50 - b%32)) & GGML_MS_STATE_MASK;
+        v[j] = ms_c_dp4a(GGML_MS_C_A*s + GGML_MS_C_B, 0x01010101, ms_c_dp4a_bias);
+    }
+
+#pragma unroll
+    for (int c = 0; c < ncols; ++c) {
+        const block_y16 * by = by16 + c*stride_col + iqs;
+        int sumi = 0;
+#pragma unroll
+        for (int i = 0; i < QK8_1/2; ++i) {
+            const int q = get_int_b4(by->qs, i);
+            sumi += v[2*i + 0]*(int) (int16_t) (q & 0xFFFF);
+            sumi += v[2*i + 1]*(q >> 16);
+        }
+        out[c] = __half2float(bq->d) * by->d * sumi;
+    }
+}
+
 // as vec_dot_ms_c_q8_1 with 16 bit activations: 32 weights (iqs = 0..15) of an MS_C block times block_y16 iqs.
 // v*y with v = (sum of the bytes of x) - 510 is below 2^24 in magnitude, the sum of 32 of them fits int32.
 template <typename block_t>

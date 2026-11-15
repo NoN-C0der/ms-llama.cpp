@@ -90,6 +90,25 @@ static __device__ __forceinline__ float mmvq_vec_dot(
     }
 }
 
+static constexpr __host__ __device__ bool mmvq_is_ms_c(ggml_type type) {
+    return type == GGML_TYPE_MS_C1 || type == GGML_TYPE_MS_C2 || type == GGML_TYPE_MS_C3 ||
+           type == GGML_TYPE_MS_C4 || type == GGML_TYPE_MS_C5 || type == GGML_TYPE_MS_C6;
+}
+
+// MS_C, several columns: the trellis of a weight block is decoded once for all columns (y16 + j*stride_col)
+template <ggml_type type, int ncols>
+static __device__ __forceinline__ void mmvq_vec_dot_cols(
+        const void * __restrict__ vbq, const block_y16 * __restrict__ y16, const int stride_col, const int & kbx, const int & iqs,
+        float * __restrict__ out) {
+    if constexpr (type == GGML_TYPE_MS_C1) { vec_dot_ms_c_y16_cols<block_ms_c1, ncols>(vbq, y16, stride_col, kbx, iqs, out); }
+    else if constexpr (type == GGML_TYPE_MS_C2) { vec_dot_ms_c_y16_cols<block_ms_c2, ncols>(vbq, y16, stride_col, kbx, iqs, out); }
+    else if constexpr (type == GGML_TYPE_MS_C3) { vec_dot_ms_c_y16_cols<block_ms_c3, ncols>(vbq, y16, stride_col, kbx, iqs, out); }
+    else if constexpr (type == GGML_TYPE_MS_C4) { vec_dot_ms_c_y16_cols<block_ms_c4, ncols>(vbq, y16, stride_col, kbx, iqs, out); }
+    else if constexpr (type == GGML_TYPE_MS_C5) { vec_dot_ms_c_y16_cols<block_ms_c5, ncols>(vbq, y16, stride_col, kbx, iqs, out); }
+    else if constexpr (type == GGML_TYPE_MS_C6) { vec_dot_ms_c_y16_cols<block_ms_c6, ncols>(vbq, y16, stride_col, kbx, iqs, out); }
+    else { static_assert(type == GGML_TYPE_MS_C1, "mmvq_vec_dot_cols is for MS_C types"); }
+}
+
 static constexpr __host__ __device__ int get_vdr_mmvq(ggml_type type) {
     switch (type) {
         case GGML_TYPE_Q1_0:    return VDR_Q1_0_Q8_1_MMVQ;
@@ -824,6 +843,28 @@ static __global__ void mul_mat_vec_q(
         }
 #endif
 
+        if constexpr (mmvq_is_ms_c(type) && ncols_dst > 1) {
+            // decode each MS_C weight block once for all columns, same sums as the loop below
+            const block_y16 * y16_k = y16_base + (&y[kby] - (const block_q8_1 *) vy);
+#pragma unroll
+            for (int i = 0; i < rows_per_thread; ++i) {
+                float r[ncols_dst];
+                mmvq_vec_dot_cols<type, ncols_dst>(vx, y16_k, stride_col_y, kbx_offset + i*stride_row_x + kbx, kqs, r);
+#pragma unroll
+                for (int j = 0; j < ncols_dst; ++j) {
+                    tmp[j][i] += r[j];
+                }
+                if constexpr (has_fusion) {
+                    if (use_gate) {
+                        mmvq_vec_dot_cols<type, ncols_dst>(vgate, y16_k, stride_col_y, kbx_offset + i*stride_row_x + kbx, kqs, r);
+#pragma unroll
+                        for (int j = 0; j < ncols_dst; ++j) {
+                            tmp_gate[j][i] += r[j];
+                        }
+                    }
+                }
+            }
+        } else {
 #pragma unroll
         for (int j = 0; j < ncols_dst; ++j) {
 #pragma unroll
@@ -837,6 +878,7 @@ static __global__ void mul_mat_vec_q(
                     }
                 }
             }
+        }
         }
     }
 
