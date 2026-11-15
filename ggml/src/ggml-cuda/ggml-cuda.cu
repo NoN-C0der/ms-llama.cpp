@@ -1826,8 +1826,11 @@ static bool ggml_cuda_should_fuse_mul_mat(const ggml_tensor * ffn_up,
         }
     }
 
-    if (ffn_up->src[0]->type != ffn_gate->src[0]->type || !ggml_are_same_shape(ffn_up->src[0], ffn_gate->src[0]) ||
-        !ggml_are_same_stride(ffn_up->src[0], ffn_gate->src[0])) {
+    // MS_C gate and up of different widths only fuse in the MS prompt matmul (batches > 64, ggml_cuda_should_fuse_mul_mat_ms)
+    const bool ms_mixed = is_mul_mat && ggml_cuda_type_is_ms_c(ffn_up->src[0]->type) && ggml_cuda_type_is_ms_c(ffn_gate->src[0]->type) &&
+        ffn_up->src[1]->ne[1] > 64;
+    if ((ffn_up->src[0]->type != ffn_gate->src[0]->type && !ms_mixed) || !ggml_are_same_shape(ffn_up->src[0], ffn_gate->src[0]) ||
+        (!ggml_are_same_stride(ffn_up->src[0], ffn_gate->src[0]) && !ms_mixed)) {
         return false;
     }
 

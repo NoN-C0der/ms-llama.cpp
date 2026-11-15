@@ -360,6 +360,7 @@ static constexpr size_t mmms_nbytes_shared() {
 struct mmms_args {
     const char * x; const half2 * y; const float * inv_scale; float * dst; float * part;
     const char * x_up; int glu_op; float glu_limit; // gate/up fusion: x is the gate, x_up the up weights
+    int64_t s01_up; int64_t s02_up; int64_t s03_up;
     int ne00; int ne01; int64_t s01; int64_t s02; int64_t s03;
     int ne1; int ne11_pad; int ne12; int ne13; int r2; int r3;
     int64_t s1; int64_t s2; int64_t s3;
@@ -381,9 +382,9 @@ static __device__ __forceinline__ int mmms_out_col(const int lane, const int j, 
 
 // glu: warps 0 .. nwarps/2 - 1 compute rows of the gate (a.x), the others the same rows of the up weights (a.x_up),
 // the tile is written as glu(gate, up); one block per tile (no stream-k), bm = 8*nwarps output rows
-template <int k, int nwarps, int bn, bool acc_f16, bool glu = false>
-static __global__ void __launch_bounds__(nwarps*WARP_SIZE)
-mul_mat_ms_c(const mmms_args a) {
+template <int k, int nwarps, int bn, bool acc_f16, bool glu>
+static __device__ __forceinline__ void mul_mat_ms_c_body(
+        const mmms_args & a, const char * __restrict__ xw, const int64_t s01, const int64_t s02, const int64_t s03) {
 #if defined(TURING_MMA_AVAILABLE)
     using bl = mmms_block<k>;
     constexpr int bm      = glu ? 8*nwarps : 16*nwarps;
@@ -424,9 +425,9 @@ mul_mat_ms_c(const mmms_args a) {
         const int wr   = glu ? warp % (nwarps/2) : warp; // warp row
         const int row0 = tm*bm + 16*wr;
 
-        const char * x0 = (glu && warp >= nwarps/2 ? a.x_up : a.x) + (i13/a.r3)*a.s03 + (i12/a.r2)*a.s02;
-        const char * xa = x0 + min(row0 + g + 0, a.ne01 - 1)*a.s01;
-        const char * xb = x0 + min(row0 + g + 8, a.ne01 - 1)*a.s01;
+        const char * x0 = xw + (i13/a.r3)*s03 + (i12/a.r2)*s02;
+        const char * xa = x0 + min(row0 + g + 0, a.ne01 - 1)*s01;
+        const char * xb = x0 + min(row0 + g + 8, a.ne01 - 1)*s01;
 
         const half2 * yz = a.y + ((int64_t) iz*a.ne11_pad + col0)*(a.ne00/2);
 
@@ -603,9 +604,27 @@ mul_mat_ms_c(const mmms_args a) {
         __syncthreads(); // the next tile reuses the y stages
     }
 #else
-    GGML_UNUSED(a);
+    GGML_UNUSED_VARS(a, xw, s01, s02, s03);
     NO_DEVICE_CODE;
 #endif // defined(TURING_MMA_AVAILABLE)
+}
+
+// k_up: the type of the up weights with glu (the gate and up warps run the body of their own type, the barriers match)
+template <int k, int k_up, int nwarps, int bn, bool acc_f16, bool glu = false>
+static __global__ void __launch_bounds__(nwarps*WARP_SIZE)
+mul_mat_ms_c(const mmms_args a) {
+    if constexpr (glu && k != k_up) {
+        if (threadIdx.y >= nwarps/2) {
+            mul_mat_ms_c_body<k_up, nwarps, bn, acc_f16, glu>(a, a.x_up, a.s01_up, a.s02_up, a.s03_up);
+        } else {
+            mul_mat_ms_c_body<k,    nwarps, bn, acc_f16, glu>(a, a.x,    a.s01,    a.s02,    a.s03);
+        }
+    } else if constexpr (glu) {
+        const bool up = threadIdx.y >= nwarps/2;
+        mul_mat_ms_c_body<k, nwarps, bn, acc_f16, glu>(a, up ? a.x_up : a.x, up ? a.s01_up : a.s01, up ? a.s02_up : a.s02, up ? a.s03_up : a.s03);
+    } else {
+        mul_mat_ms_c_body<k, nwarps, bn, acc_f16, glu>(a, a.x, a.s01, a.s02, a.s03);
+    }
 }
 
 // sums the parts of the tiles that more than one block worked on, in block order
@@ -1055,11 +1074,11 @@ bool ggml_cuda_should_use_mmms(enum ggml_type type, int cc, int64_t ne11) {
     return !disabled && GGML_CUDA_CC_IS_NVIDIA(cc) && turing_mma_available(cc) && (ne11 > MMVQ_MAX_BATCH_SIZE || small);
 }
 
-template <int k, int nwarps, int bn, bool acc_f16, bool glu = false>
+template <int k, int nwarps, int bn, bool acc_f16, bool glu = false, int k_up = k>
 static void mul_mat_ms_c_launch(ggml_backend_cuda_context & ctx, mmms_args a, const bool stream_k) {
     cudaStream_t stream = ctx.stream();
     constexpr size_t nbytes_shared = mmms_nbytes_shared<bn>();
-    auto kernel = mul_mat_ms_c<k, nwarps, bn, acc_f16, glu>;
+    auto kernel = mul_mat_ms_c<k, k_up, nwarps, bn, acc_f16, glu>;
     CUDA_SET_SHARED_MEMORY_LIMIT(kernel, nbytes_shared);
 
     const int id = ggml_cuda_get_device();
@@ -1098,14 +1117,38 @@ static void mul_mat_ms_c_launch(ggml_backend_cuda_context & ctx, mmms_args a, co
 #define MMMS_GLU_NWARPS 16
 #define MMMS_GLU_BN     128
 
-template <int k>
+template <int k, int k_up>
 static void mul_mat_ms_c_glu(ggml_backend_cuda_context & ctx, const bool acc_f16, mmms_args a) {
     a.ntiles_m = (a.ne01 + 8*MMMS_GLU_NWARPS - 1)/(8*MMMS_GLU_NWARPS);
     a.ntiles_n = a.ne11_pad/MMMS_GLU_BN;
     a.ntiles   = a.ntiles_m*a.ntiles_n*a.ne12*a.ne13;
-    if (acc_f16) { mul_mat_ms_c_launch<k, MMMS_GLU_NWARPS, MMMS_GLU_BN, true,  true>(ctx, a, false); }
-    else         { mul_mat_ms_c_launch<k, MMMS_GLU_NWARPS, MMMS_GLU_BN, false, true>(ctx, a, false); }
+    if (acc_f16) { mul_mat_ms_c_launch<k, MMMS_GLU_NWARPS, MMMS_GLU_BN, true,  true, k_up>(ctx, a, false); }
+    else         { mul_mat_ms_c_launch<k, MMMS_GLU_NWARPS, MMMS_GLU_BN, false, true, k_up>(ctx, a, false); }
 }
+
+// gate/up types of a fused pair: up to MMMS_GLU_MAX_DK bits apart
+#define MMMS_GLU_MAX_DK 2
+
+static int mmms_type_bits(const ggml_type type) {
+    switch (type) {
+        case GGML_TYPE_MS_C1: return 1;
+        case GGML_TYPE_MS_C2: return 2;
+        case GGML_TYPE_MS_C3: return 3;
+        case GGML_TYPE_MS_C4: return 4;
+        case GGML_TYPE_MS_C5: return 5;
+        case GGML_TYPE_MS_C6: return 6;
+        default:              return 0;
+    }
+}
+
+template <int k>
+static void mul_mat_ms_c_glu_switch(ggml_backend_cuda_context & ctx, const bool acc_f16, const int k_up, const mmms_args & a) {
+#define MMMS_GLU_CASE(ku_)                                                                if constexpr (ku_ >= k - MMMS_GLU_MAX_DK && ku_ <= k + MMMS_GLU_MAX_DK) {                 if (k_up == ku_) {                                                                        mul_mat_ms_c_glu<k, ku_>(ctx, acc_f16, a);                                            return;                                                                           }                                                                                 }
+    MMMS_GLU_CASE(1) MMMS_GLU_CASE(2) MMMS_GLU_CASE(3) MMMS_GLU_CASE(4) MMMS_GLU_CASE(5) MMMS_GLU_CASE(6)
+#undef MMMS_GLU_CASE
+    GGML_ABORT("fatal error");
+}
+
 
 template <int k>
 static void mul_mat_ms_c_switch(ggml_backend_cuda_context & ctx, const int nwarps, const int bn, const bool acc_f16, const bool stream_k, mmms_args a) {
@@ -1222,18 +1265,20 @@ static void ggml_cuda_mul_mat_ms_impl(ggml_backend_cuda_context & ctx, const ggm
     mmms_args a = {};
     a.x = (const char *) src0->data; a.y = y; a.inv_scale = inv_scale; a.dst = (float *) dst->data; a.part = nullptr;
     a.x_up = src0_up ? (const char *) src0_up->data : nullptr; a.glu_op = glu_op; a.glu_limit = glu_limit;
+    a.s01_up = src0_up ? src0_up->nb[1] : 0; a.s02_up = src0_up ? src0_up->nb[2] : 0; a.s03_up = src0_up ? src0_up->nb[3] : 0;
     a.ne00 = ne00; a.ne01 = ne01; a.s01 = nb01; a.s02 = nb02; a.s03 = nb03;
     a.ne1 = ne11; a.ne11_pad = ne11_pad; a.ne12 = ne12; a.ne13 = ne13; a.r2 = ne12/ne02; a.r3 = ne13/ne03;
     a.s1 = nb1/sizeof(float); a.s2 = nb2/sizeof(float); a.s3 = nb3/sizeof(float);
 
     if (src0_up) {
+        const int k_up = mmms_type_bits(src0_up->type);
         switch (src0->type) {
-            case GGML_TYPE_MS_C1: mul_mat_ms_c_glu<1>(ctx, acc_f16, a); break;
-            case GGML_TYPE_MS_C2: mul_mat_ms_c_glu<2>(ctx, acc_f16, a); break;
-            case GGML_TYPE_MS_C3: mul_mat_ms_c_glu<3>(ctx, acc_f16, a); break;
-            case GGML_TYPE_MS_C4: mul_mat_ms_c_glu<4>(ctx, acc_f16, a); break;
-            case GGML_TYPE_MS_C5: mul_mat_ms_c_glu<5>(ctx, acc_f16, a); break;
-            case GGML_TYPE_MS_C6: mul_mat_ms_c_glu<6>(ctx, acc_f16, a); break;
+            case GGML_TYPE_MS_C1: mul_mat_ms_c_glu_switch<1>(ctx, acc_f16, k_up, a); break;
+            case GGML_TYPE_MS_C2: mul_mat_ms_c_glu_switch<2>(ctx, acc_f16, k_up, a); break;
+            case GGML_TYPE_MS_C3: mul_mat_ms_c_glu_switch<3>(ctx, acc_f16, k_up, a); break;
+            case GGML_TYPE_MS_C4: mul_mat_ms_c_glu_switch<4>(ctx, acc_f16, k_up, a); break;
+            case GGML_TYPE_MS_C5: mul_mat_ms_c_glu_switch<5>(ctx, acc_f16, k_up, a); break;
+            case GGML_TYPE_MS_C6: mul_mat_ms_c_glu_switch<6>(ctx, acc_f16, k_up, a); break;
             default:
                 GGML_ABORT("fatal error");
         }
@@ -1264,8 +1309,10 @@ bool ggml_cuda_should_fuse_mul_mat_ms(const ggml_tensor * up, const ggml_tensor 
     }
     const ggml_tensor * x_up   = up->src[0];
     const ggml_tensor * x_gate = gate->src[0];
-    if (x_up->type != x_gate->type || !ggml_cuda_should_use_mmms(x_up->type, cc, up->src[1]->ne[1]) ||
-            up->src[1] != gate->src[1] || !ggml_are_same_shape(x_up, x_gate) || !ggml_are_same_stride(x_up, x_gate) ||
+    const int dk = mmms_type_bits(x_up->type) - mmms_type_bits(x_gate->type);
+    if (!ggml_cuda_should_use_mmms(x_up->type, cc, up->src[1]->ne[1]) || !ggml_cuda_should_use_mmms(x_gate->type, cc, up->src[1]->ne[1]) ||
+            dk < -MMMS_GLU_MAX_DK || dk > MMMS_GLU_MAX_DK ||
+            up->src[1] != gate->src[1] || !ggml_are_same_shape(x_up, x_gate) ||
             ggml_get_op_params_i32(up, 1) != GGML_HINT_NONE || ggml_get_op_params_i32(gate, 1) != GGML_HINT_NONE) {
         return false;
     }
