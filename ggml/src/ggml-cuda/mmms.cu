@@ -1,5 +1,6 @@
 #include "mmms.cuh"
 #include "mmvq.cuh"
+#include "unary.cuh"
 #include "cp-async.cuh"
 
 // Batched MS_C x f32 matrix multiplication on tensor cores (mma.m16n8k16, f16 inputs, f32 sums).
@@ -358,6 +359,7 @@ static constexpr size_t mmms_nbytes_shared() {
 
 struct mmms_args {
     const char * x; const half2 * y; const float * inv_scale; float * dst; float * part;
+    const char * x_up; int glu_op; float glu_limit; // gate/up fusion: x is the gate, x_up the up weights
     int ne00; int ne01; int64_t s01; int64_t s02; int64_t s03;
     int ne1; int ne11_pad; int ne12; int ne13; int r2; int r3;
     int64_t s1; int64_t s2; int64_t s3;
@@ -377,12 +379,14 @@ static __device__ __forceinline__ int mmms_out_col(const int lane, const int j, 
     return 8*j + 2*(lane%4) + l%2;
 }
 
-template <int k, int nwarps, int bn, bool acc_f16>
+// glu: warps 0 .. nwarps/2 - 1 compute rows of the gate (a.x), the others the same rows of the up weights (a.x_up),
+// the tile is written as glu(gate, up); one block per tile (no stream-k), bm = 8*nwarps output rows
+template <int k, int nwarps, int bn, bool acc_f16, bool glu = false>
 static __global__ void __launch_bounds__(nwarps*WARP_SIZE)
 mul_mat_ms_c(const mmms_args a) {
 #if defined(TURING_MMA_AVAILABLE)
     using bl = mmms_block<k>;
-    constexpr int bm      = 16*nwarps;
+    constexpr int bm      = glu ? 8*nwarps : 16*nwarps;
     constexpr int nthr    = nwarps*WARP_SIZE;
     constexpr int ntn     = bn/8;                  // n tiles of the mma
     constexpr int npieces = bn*MMMS_BK*2/16;       // 16 byte pieces of a y stage
@@ -417,9 +421,10 @@ mul_mat_ms_c(const mmms_args a) {
         const int i13  = iz / a.ne12;
 
         const int col0 = tn*bn;
-        const int row0 = tm*bm + 16*warp;
+        const int wr   = glu ? warp % (nwarps/2) : warp; // warp row
+        const int row0 = tm*bm + 16*wr;
 
-        const char * x0 = a.x + (i13/a.r3)*a.s03 + (i12/a.r2)*a.s02;
+        const char * x0 = (glu && warp >= nwarps/2 ? a.x_up : a.x) + (i13/a.r3)*a.s03 + (i12/a.r2)*a.s02;
         const char * xa = x0 + min(row0 + g + 0, a.ne01 - 1)*a.s01;
         const char * xb = x0 + min(row0 + g + 8, a.ne01 - 1)*a.s01;
 
@@ -533,7 +538,42 @@ mul_mat_ms_c(const mmms_args a) {
             }
         }
 
-        if (kc0 == 0 && kc1 == nchunks) {
+        if constexpr (glu) {
+            // the gate warps pass their sums through smem (the y stages, all warps are done with them), the up warps write
+            float * dz = a.dst + i13*a.s3 + i12*a.s2;
+            float * xs = (float *) tile_y;
+            constexpr int nh = ntn/2; // n tiles per exchange
+            static_assert((nwarps/2)*nh*4*WARP_SIZE*sizeof(float) <= MMMS_NSTAGES*sbytes, "glu exchange does not fit");
+#pragma unroll
+            for (int h = 0; h < 2; ++h) {
+                __syncthreads();
+                if (warp < nwarps/2) {
+#pragma unroll
+                    for (int jj = 0; jj < nh; ++jj) {
+#pragma unroll
+                        for (int l = 0; l < 4; ++l) {
+                            xs[((wr*nh + jj)*4 + l)*WARP_SIZE + lane] = acc[h*nh + jj][l];
+                        }
+                    }
+                }
+                __syncthreads();
+                if (warp >= nwarps/2) {
+#pragma unroll
+                    for (int jj = 0; jj < nh; ++jj) {
+#pragma unroll
+                        for (int l = 0; l < 4; ++l) {
+                            const int m = tm*bm + mmms_out_row(wr, lane, l);
+                            const int n = col0 + mmms_out_col(lane, h*nh + jj, l);
+                            if (m < a.ne01 && n < a.ne1) {
+                                const float is = a.inv_scale[(int64_t) iz*a.ne11_pad + n];
+                                const float gv = xs[((wr*nh + jj)*4 + l)*WARP_SIZE + lane]*is;
+                                dz[n*a.s1 + m] = ggml_cuda_op_glu_single((ggml_glu_op) a.glu_op, gv, acc[h*nh + jj][l]*is, a.glu_limit);
+                            }
+                        }
+                    }
+                }
+            }
+        } else if (kc0 == 0 && kc1 == nchunks) {
             float * dz = a.dst + i13*a.s3 + i12*a.s2;
 #pragma unroll
             for (int j = 0; j < ntn; ++j) {
@@ -1015,11 +1055,11 @@ bool ggml_cuda_should_use_mmms(enum ggml_type type, int cc, int64_t ne11) {
     return !disabled && GGML_CUDA_CC_IS_NVIDIA(cc) && turing_mma_available(cc) && (ne11 > MMVQ_MAX_BATCH_SIZE || small);
 }
 
-template <int k, int nwarps, int bn, bool acc_f16>
+template <int k, int nwarps, int bn, bool acc_f16, bool glu = false>
 static void mul_mat_ms_c_launch(ggml_backend_cuda_context & ctx, mmms_args a, const bool stream_k) {
     cudaStream_t stream = ctx.stream();
     constexpr size_t nbytes_shared = mmms_nbytes_shared<bn>();
-    auto kernel = mul_mat_ms_c<k, nwarps, bn, acc_f16>;
+    auto kernel = mul_mat_ms_c<k, nwarps, bn, acc_f16, glu>;
     CUDA_SET_SHARED_MEMORY_LIMIT(kernel, nbytes_shared);
 
     const int id = ggml_cuda_get_device();
@@ -1052,6 +1092,19 @@ static void mul_mat_ms_c_launch(ggml_backend_cuda_context & ctx, mmms_args a, co
     a.part = part.get();
     kernel<<<a.nblocks, block, nbytes_shared, stream>>>(a);
     mul_mat_ms_c_fixup<nwarps, bn><<<a.ntiles, block, 0, stream>>>(a);
+}
+
+// gate/up fusion: the 128 column tile of 16 warps, 128 rows of the gate and of the up weights per tile
+#define MMMS_GLU_NWARPS 16
+#define MMMS_GLU_BN     128
+
+template <int k>
+static void mul_mat_ms_c_glu(ggml_backend_cuda_context & ctx, const bool acc_f16, mmms_args a) {
+    a.ntiles_m = (a.ne01 + 8*MMMS_GLU_NWARPS - 1)/(8*MMMS_GLU_NWARPS);
+    a.ntiles_n = a.ne11_pad/MMMS_GLU_BN;
+    a.ntiles   = a.ntiles_m*a.ntiles_n*a.ne12*a.ne13;
+    if (acc_f16) { mul_mat_ms_c_launch<k, MMMS_GLU_NWARPS, MMMS_GLU_BN, true,  true>(ctx, a, false); }
+    else         { mul_mat_ms_c_launch<k, MMMS_GLU_NWARPS, MMMS_GLU_BN, false, true>(ctx, a, false); }
 }
 
 template <int k>
@@ -1091,7 +1144,8 @@ static bool mmms_use_f16_sums(const int id) {
     return choice[id] == 1;
 }
 
-void ggml_cuda_mul_mat_ms(ggml_backend_cuda_context & ctx, const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst) {
+static void ggml_cuda_mul_mat_ms_impl(ggml_backend_cuda_context & ctx, const ggml_tensor * src0, const ggml_tensor * src0_up,
+        const ggml_tensor * src1, ggml_tensor * dst, const bool cache_ok, const int glu_op, const float glu_limit) {
     GGML_TENSOR_BINARY_OP_LOCALS;
 
     GGML_ASSERT(src1->type == GGML_TYPE_F32);
@@ -1103,6 +1157,7 @@ void ggml_cuda_mul_mat_ms(ggml_backend_cuda_context & ctx, const ggml_tensor * s
     GGML_ASSERT(ne12 % ne02 == 0 && ne13 % ne03 == 0);
 
     if (ne11 <= MMMS_SMALL_MAX_COLS) {
+        GGML_ASSERT(src0_up == nullptr);
         ggml_cuda_mul_mat_ms_small(ctx, src0, src1, dst);
         return;
     }
@@ -1113,6 +1168,7 @@ void ggml_cuda_mul_mat_ms(ggml_backend_cuda_context & ctx, const ggml_tensor * s
     // the 128 column tile with 256 rows: each y tile serves twice the weights (less L2 traffic, the GB10 is power bound here)
     const int bn     = ne11 <= 16 ? 16 : ne11 <= 32 ? 32 : ne11 <= 64 ? 64 : 128;
     const int nwarps = bn <= 32 ? 4 : bn == 128 ? 16 : 8;
+    GGML_ASSERT(src0_up == nullptr || bn == MMMS_GLU_BN);
 
     const int  id       = ggml_cuda_get_device();
     const bool acc_f16  = mmms_use_f16_sums(id);
@@ -1124,7 +1180,7 @@ void ggml_cuda_mul_mat_ms(ggml_backend_cuda_context & ctx, const ggml_tensor * s
     // (a src1 always takes the same path, so the layouts of the two paths never mix)
     const size_t y_size    = (size_t) ne12*ne13*ne11_pad*ne10*sizeof(half);
     const size_t y_alloc   = y_size + (size_t) ne12*ne13*ne11_pad*sizeof(float);
-    const bool   use_cache = dst->op == GGML_OP_MUL_MAT && ctx.stream_context().concurrent_events.empty();
+    const bool   use_cache = cache_ok && ctx.stream_context().concurrent_events.empty();
     const bool   cached    = use_cache && ctx.mmms_y_src == src1 && ctx.mmms_y;
     ggml_cuda_pool_alloc<char> y_tmp(ctx.pool());
     char * yb;
@@ -1165,9 +1221,25 @@ void ggml_cuda_mul_mat_ms(ggml_backend_cuda_context & ctx, const ggml_tensor * s
 
     mmms_args a = {};
     a.x = (const char *) src0->data; a.y = y; a.inv_scale = inv_scale; a.dst = (float *) dst->data; a.part = nullptr;
+    a.x_up = src0_up ? (const char *) src0_up->data : nullptr; a.glu_op = glu_op; a.glu_limit = glu_limit;
     a.ne00 = ne00; a.ne01 = ne01; a.s01 = nb01; a.s02 = nb02; a.s03 = nb03;
     a.ne1 = ne11; a.ne11_pad = ne11_pad; a.ne12 = ne12; a.ne13 = ne13; a.r2 = ne12/ne02; a.r3 = ne13/ne03;
     a.s1 = nb1/sizeof(float); a.s2 = nb2/sizeof(float); a.s3 = nb3/sizeof(float);
+
+    if (src0_up) {
+        switch (src0->type) {
+            case GGML_TYPE_MS_C1: mul_mat_ms_c_glu<1>(ctx, acc_f16, a); break;
+            case GGML_TYPE_MS_C2: mul_mat_ms_c_glu<2>(ctx, acc_f16, a); break;
+            case GGML_TYPE_MS_C3: mul_mat_ms_c_glu<3>(ctx, acc_f16, a); break;
+            case GGML_TYPE_MS_C4: mul_mat_ms_c_glu<4>(ctx, acc_f16, a); break;
+            case GGML_TYPE_MS_C5: mul_mat_ms_c_glu<5>(ctx, acc_f16, a); break;
+            case GGML_TYPE_MS_C6: mul_mat_ms_c_glu<6>(ctx, acc_f16, a); break;
+            default:
+                GGML_ABORT("fatal error");
+        }
+        CUDA_CHECK(cudaGetLastError());
+        return;
+    }
 
     switch (src0->type) {
         case GGML_TYPE_MS_C1: mul_mat_ms_c_switch<1>(ctx, nwarps, bn, acc_f16, stream_k, a); break;
@@ -1180,4 +1252,31 @@ void ggml_cuda_mul_mat_ms(ggml_backend_cuda_context & ctx, const ggml_tensor * s
             GGML_ABORT("fatal error");
     }
     CUDA_CHECK(cudaGetLastError());
+}
+
+void ggml_cuda_mul_mat_ms(ggml_backend_cuda_context & ctx, const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst) {
+    ggml_cuda_mul_mat_ms_impl(ctx, src0, nullptr, src1, dst, dst->op == GGML_OP_MUL_MAT, -1, 0.0f);
+}
+
+bool ggml_cuda_should_fuse_mul_mat_ms(const ggml_tensor * up, const ggml_tensor * gate, const ggml_tensor * glu, const int cc) {
+    if (up->op != GGML_OP_MUL_MAT || gate->op != GGML_OP_MUL_MAT || glu->op != GGML_OP_GLU) {
+        return false;
+    }
+    const ggml_tensor * x_up   = up->src[0];
+    const ggml_tensor * x_gate = gate->src[0];
+    if (x_up->type != x_gate->type || !ggml_cuda_should_use_mmms(x_up->type, cc, up->src[1]->ne[1]) ||
+            up->src[1] != gate->src[1] || !ggml_are_same_shape(x_up, x_gate) || !ggml_are_same_stride(x_up, x_gate) ||
+            ggml_get_op_params_i32(up, 1) != GGML_HINT_NONE || ggml_get_op_params_i32(gate, 1) != GGML_HINT_NONE) {
+        return false;
+    }
+    // the 128 column tile only (the batches after the small ones)
+    if (up->src[1]->ne[1] <= 64 || up->src[1]->type != GGML_TYPE_F32 || !ggml_is_contiguous(glu) || glu->type != GGML_TYPE_F32) {
+        return false;
+    }
+    const ggml_glu_op op = ggml_get_glu_op(glu);
+    return op == GGML_GLU_OP_SWIGLU || op == GGML_GLU_OP_GEGLU;
+}
+
+void ggml_cuda_mul_mat_ms_glu(ggml_backend_cuda_context & ctx, const ggml_tensor * up, const ggml_tensor * gate, ggml_tensor * glu) {
+    ggml_cuda_mul_mat_ms_impl(ctx, gate->src[0], up->src[0], up->src[1], glu, true, (int) ggml_get_glu_op(glu), ggml_get_op_params_f32(glu, 3));
 }
