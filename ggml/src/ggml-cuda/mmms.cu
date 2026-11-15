@@ -621,8 +621,8 @@ static void mul_mat_ms_c_switch(ggml_backend_cuda_context & ctx, const int nwarp
 
 // f16 sums per chunk (added to f32 sums) or f32 sums. The f32 sums are exact up to the f16 inputs (KLD ~1e-6 vs ~4e-6),
 // GeForce and TITAN cards run them at half the tensor core rate, data center and workstation cards at full rate.
-// GB10 (DGX Spark): f16 sums until its rate is measured. GGML_CUDA_MMMS_ACC=f16|f32 overrides the choice.
-static bool mmms_use_f16_sums(const int id, const int cc) {
+// The GB10 (DGX Spark, RTX Spark) measured as fast with f32 sums, so it keeps them. GGML_CUDA_MMMS_ACC=f16|f32 overrides the choice.
+static bool mmms_use_f16_sums(const int id) {
     static int choice[GGML_CUDA_MAX_DEVICES] = {0}; // 0: not decided yet, 1: f16 sums, 2: f32 sums
     if (choice[id] == 0) {
         const char * e = getenv("GGML_CUDA_MMMS_ACC");
@@ -633,8 +633,7 @@ static bool mmms_use_f16_sums(const int id, const int cc) {
         } else {
             cudaDeviceProp prop;
             CUDA_CHECK(cudaGetDeviceProperties(&prop, id));
-            const bool half_rate = strstr(prop.name, "GeForce") != nullptr || strstr(prop.name, "TITAN") != nullptr ||
-                cc == GGML_CUDA_CC_DGX_SPARK;
+            const bool half_rate = strstr(prop.name, "GeForce") != nullptr || strstr(prop.name, "TITAN") != nullptr;
             choice[id] = half_rate ? 1 : 2;
         }
     }
@@ -659,7 +658,7 @@ void ggml_cuda_mul_mat_ms(ggml_backend_cuda_context & ctx, const ggml_tensor * s
     const int nwarps = bn <= 32 ? 4 : 8;
 
     const int  id       = ggml_cuda_get_device();
-    const bool acc_f16  = mmms_use_f16_sums(id, ggml_cuda_info().devices[id].cc);
+    const bool acc_f16  = mmms_use_f16_sums(id);
     const bool stream_k = true;
 
     const int ne11_pad = GGML_PAD(ne11, bn);
