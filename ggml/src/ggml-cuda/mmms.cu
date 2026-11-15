@@ -162,6 +162,88 @@ mmms_convert_y(
     }
 }
 
+// mmms_convert_y reading the column once: block (col) keeps it in registers, r iq groups of 8 values per thread
+#define MMMS_CONVERT1_NT 512
+template <bool aligned, int r>
+static __global__ void __launch_bounds__(MMMS_CONVERT1_NT)
+mmms_convert_y1(
+        const float * __restrict__ x, uint4 * __restrict__ y, float * __restrict__ inv_scale,
+        const int ne10, const int ne11, const int ne11_pad, const int ne12,
+        const int64_t s11, const int64_t s12, const int64_t s13) {
+    const int64_t col = blockIdx.x;
+    const int     i11 = col % ne11_pad;
+    const int     i12 = (col / ne11_pad) % ne12;
+    const int64_t i13 = (col / ne11_pad) / ne12;
+    const int     tid = threadIdx.x;
+    const int     niq = ne10/8;
+
+    uint4 * yc = y + col*niq;
+    if (i11 >= ne11) {
+        for (int iq = tid; iq < niq; iq += MMMS_CONVERT1_NT) {
+            yc[iq] = make_uint4(0, 0, 0, 0);
+        }
+        if (tid == 0) {
+            inv_scale[col] = 1.0f;
+        }
+        return;
+    }
+
+    const float * xc = x + i13*s13 + i12*s12 + i11*s11;
+
+    float2 v[r][4];
+    float amax = 0.0f;
+#pragma unroll
+    for (int j = 0; j < r; ++j) {
+        const int iq = tid + j*MMMS_CONVERT1_NT;
+        if (iq < niq) {
+            const int q = iq % (MMMS_BK/8);
+            const float * xq = xc + (iq / (MMMS_BK/8))*MMMS_BK + 4*(q/2) + 2*(q%2);
+#pragma unroll
+            for (int t = 0; t < 4; ++t) {
+                v[j][t] = aligned ? *(const float2 *) (xq + 16*t) : make_float2(xq[16*t], xq[16*t + 1]);
+                amax = fmaxf(amax, fmaxf(fabsf(v[j][t].x), fabsf(v[j][t].y)));
+            }
+        }
+    }
+    amax = warp_reduce_max(amax);
+    __shared__ float amax_warp[MMMS_CONVERT1_NT/WARP_SIZE];
+    if (tid % WARP_SIZE == 0) {
+        amax_warp[tid / WARP_SIZE] = amax;
+    }
+    __syncthreads();
+    amax = 0.0f;
+#pragma unroll
+    for (int w = 0; w < MMMS_CONVERT1_NT/WARP_SIZE; ++w) {
+        amax = fmaxf(amax, amax_warp[w]);
+    }
+
+    int e = 0;
+    if (amax > 0.0f && isfinite(amax)) {
+        frexpf(amax, &e);
+        e = min(max(6 - e, -100), 100);
+    } else {
+        e = 0;
+    }
+    const float scale = ldexpf(1.0f, e/2)*ldexpf(1.0f, e - e/2);
+    if (tid == 0) {
+        inv_scale[col] = 1.0f/scale;
+    }
+
+#pragma unroll
+    for (int j = 0; j < r; ++j) {
+        const int iq = tid + j*MMMS_CONVERT1_NT;
+        if (iq < niq) {
+            uint32_t w[4];
+#pragma unroll
+            for (int t = 0; t < 4; ++t) {
+                const half2 h = __floats2half2_rn(v[j][t].x*scale, v[j][t].y*scale);
+                w[t] = *(const uint32_t *) &h;
+            }
+            yc[iq] = make_uint4(w[0], w[1], w[2], w[3]);
+        }
+    }
+}
+
 // state bits [pos, pos + 14) of the MSB-first words wn
 template <int pos, int nw>
 static __device__ __forceinline__ uint32_t mmms_state(const uint32_t (&wn)[nw]) {
@@ -403,11 +485,20 @@ mul_mat_ms_c(const mmms_args a) {
 
             [[maybe_unused]] uint32_t hacc[ntn][2];
 
+            // the weights of step s + 1 are decoded before the mma of step s are issued
+            uint32_t an[4];
+            mmms_decode_step<k, 0>(wna, dca, an[0], an[2]);
+            mmms_decode_step<k, 0>(wnb, dcb, an[1], an[3]);
             static_for<0, MMMS_BK/16>([&](auto s_) {
                 constexpr int s = decltype(s_)::value;
-                uint32_t a0, a1, a2, a3;
-                mmms_decode_step<k, s>(wna, dca, a0, a2);
-                mmms_decode_step<k, s>(wnb, dcb, a1, a3);
+                const uint32_t a0 = an[0];
+                const uint32_t a1 = an[1];
+                const uint32_t a2 = an[2];
+                const uint32_t a3 = an[3];
+                if constexpr (s + 1 < MMMS_BK/16) {
+                    mmms_decode_step<k, s + 1>(wna, dca, an[0], an[2]);
+                    mmms_decode_step<k, s + 1>(wnb, dcb, an[1], an[3]);
+                }
 
 #pragma unroll
                 for (int j = 0; j < ntn; j += 2) {
@@ -974,7 +1065,7 @@ static void mul_mat_ms_c_switch(ggml_backend_cuda_context & ctx, const int nwarp
         else         { mul_mat_ms_c_launch<k, nw_, bn_, false>(ctx, a, stream_k); }           \
         return;                                                                               \
     }
-    MMMS_CASE(8, 128) MMMS_CASE(8, 64) MMMS_CASE(4, 32) MMMS_CASE(4, 16)
+    MMMS_CASE(16, 128) MMMS_CASE(8, 64) MMMS_CASE(4, 32) MMMS_CASE(4, 16)
 #undef MMMS_CASE
     GGML_ABORT("fatal error");
 }
@@ -1019,8 +1110,9 @@ void ggml_cuda_mul_mat_ms(ggml_backend_cuda_context & ctx, const ggml_tensor * s
     cudaStream_t stream = ctx.stream();
 
     // n tile: the smallest that holds the batch (small batches waste less of the mma on padding columns)
+    // the 128 column tile with 256 rows: each y tile serves twice the weights (less L2 traffic, the GB10 is power bound here)
     const int bn     = ne11 <= 16 ? 16 : ne11 <= 32 ? 32 : ne11 <= 64 ? 64 : 128;
-    const int nwarps = bn <= 32 ? 4 : 8;
+    const int nwarps = bn <= 32 ? 4 : bn == 128 ? 16 : 8;
 
     const int  id       = ggml_cuda_get_device();
     const bool acc_f16  = mmms_use_f16_sums(id);
@@ -1028,23 +1120,51 @@ void ggml_cuda_mul_mat_ms(ggml_backend_cuda_context & ctx, const ggml_tensor * s
 
     const int ne11_pad = GGML_PAD(ne11, bn);
 
-    ggml_cuda_pool_alloc<half2> y(ctx.pool(), ne12*ne13*ne11_pad*ne10/2);
-    ggml_cuda_pool_alloc<float> inv_scale(ctx.pool(), ne12*ne13*ne11_pad);
-    {
+    // the f16 y is kept for the next matmuls of this graph evaluation that read src1, as in ggml_cuda_mul_mat_ms_small
+    // (a src1 always takes the same path, so the layouts of the two paths never mix)
+    const size_t y_size    = (size_t) ne12*ne13*ne11_pad*ne10*sizeof(half);
+    const size_t y_alloc   = y_size + (size_t) ne12*ne13*ne11_pad*sizeof(float);
+    const bool   use_cache = dst->op == GGML_OP_MUL_MAT && ctx.stream_context().concurrent_events.empty();
+    const bool   cached    = use_cache && ctx.mmms_y_src == src1 && ctx.mmms_y;
+    ggml_cuda_pool_alloc<char> y_tmp(ctx.pool());
+    char * yb;
+    if (cached) {
+        yb = ctx.mmms_y->get();
+    } else if (use_cache) {
+        ctx.mmms_y.reset();
+        ctx.mmms_y     = std::make_unique<ggml_cuda_pool_alloc<char>>(ctx.pool(), y_alloc);
+        ctx.mmms_y_src = src1;
+        yb = ctx.mmms_y->get();
+    } else {
+        yb = y_tmp.alloc(y_alloc);
+    }
+    half2 * y         = (half2 *) yb;
+    float * inv_scale = (float *) (yb + y_size);
+    const int r1 = (ne10/8 + MMMS_CONVERT1_NT - 1)/MMMS_CONVERT1_NT;
+    if (!cached) {
         const bool aligned = (uintptr_t) src1->data % 8 == 0 && nb11 % 8 == 0 && nb12 % 8 == 0 && nb13 % 8 == 0;
         const dim3 grid(ne12*ne13*ne11_pad);
+#define MMMS_CONVERT1_CASE(r_) \
+        if (r1 == r_) { \
+            if (aligned) { mmms_convert_y1<true,  r_><<<grid, MMMS_CONVERT1_NT, 0, stream>>>((const float *) src1->data, (uint4 *) y, inv_scale, \
+                ne10, ne11, ne11_pad, ne12, nb11/sizeof(float), nb12/sizeof(float), nb13/sizeof(float)); } \
+            else         { mmms_convert_y1<false, r_><<<grid, MMMS_CONVERT1_NT, 0, stream>>>((const float *) src1->data, (uint4 *) y, inv_scale, \
+                ne10, ne11, ne11_pad, ne12, nb11/sizeof(float), nb12/sizeof(float), nb13/sizeof(float)); } \
+        } else
+        MMMS_CONVERT1_CASE(1) MMMS_CONVERT1_CASE(2) MMMS_CONVERT1_CASE(3) MMMS_CONVERT1_CASE(4) MMMS_CONVERT1_CASE(5) MMMS_CONVERT1_CASE(6)
+#undef MMMS_CONVERT1_CASE
         if (aligned) {
-            mmms_convert_y<true><<<grid, MMMS_CONVERT_NT, 0, stream>>>((const float *) src1->data, (uint4 *) y.get(), inv_scale.get(),
+            mmms_convert_y<true><<<grid, MMMS_CONVERT_NT, 0, stream>>>((const float *) src1->data, (uint4 *) y, inv_scale,
                 ne10, ne11, ne11_pad, ne12, nb11/sizeof(float), nb12/sizeof(float), nb13/sizeof(float));
         } else {
-            mmms_convert_y<false><<<grid, MMMS_CONVERT_NT, 0, stream>>>((const float *) src1->data, (uint4 *) y.get(), inv_scale.get(),
+            mmms_convert_y<false><<<grid, MMMS_CONVERT_NT, 0, stream>>>((const float *) src1->data, (uint4 *) y, inv_scale,
                 ne10, ne11, ne11_pad, ne12, nb11/sizeof(float), nb12/sizeof(float), nb13/sizeof(float));
         }
         CUDA_CHECK(cudaGetLastError());
     }
 
     mmms_args a = {};
-    a.x = (const char *) src0->data; a.y = y.get(); a.inv_scale = inv_scale.get(); a.dst = (float *) dst->data; a.part = nullptr;
+    a.x = (const char *) src0->data; a.y = y; a.inv_scale = inv_scale; a.dst = (float *) dst->data; a.part = nullptr;
     a.ne00 = ne00; a.ne01 = ne01; a.s01 = nb01; a.s02 = nb02; a.s03 = nb03;
     a.ne1 = ne11; a.ne11_pad = ne11_pad; a.ne12 = ne12; a.ne13 = ne13; a.r2 = ne12/ne02; a.r3 = ne13/ne03;
     a.s1 = nb1/sizeof(float); a.s2 = nb2/sizeof(float); a.s3 = nb3/sizeof(float);
