@@ -554,8 +554,8 @@ mul_mat_ms_c_fixup(const mmms_args a) {
 // a row read contiguous bytes, as runs u of 16 states that feed 4 mma steps each (step s: states 4*s + 0..3 of the run, as
 // in mmms_decode_step). y is f16 with k = MMMS_SC/4*t + 16*u + i of a super-chunk stored at 64*u + 16*t + i: the B fragments
 // of run u are 16 consecutive values and the 4 threads of a column read adjacent ones.
-// The loads use L2::256B (the other threads of the row and the next warps read the rest of the fetched bytes) and the words
-// of the next super-chunk of a warp are loaded before the current one is decoded.
+// The weight loads fetch 256 bytes into L2 (the other threads of the row and the next warps read the rest) and are evicted
+// from L1 first (y stays). The words of the next super-chunk of a warp are loaded before the current one is decoded.
 // When the row tiles fill few waves of the GPU the blocks (tile, part) also split K, the last block of a tile adds the
 // parts in part order (deterministic).
 #define MMMS_SMALL_MIN_COLS 4
@@ -565,23 +565,17 @@ mul_mat_ms_c_fixup(const mmms_args a) {
 #define MMMS_SMALL_CONVERT_SLICE 2048 // k values per block of mmms_small_convert_y
 
 // y as f16 [ne12*ne13][ne11][ne10] with the column scale of mmms_convert_y, in the order above; block (col, part) converts
-// k values part*MMMS_SMALL_CONVERT_SLICE .. of col and reads the whole column for the scale. Block (0, 0) zeroes the counters.
+// k values part*MMMS_SMALL_CONVERT_SLICE .. of col and reads the whole column for the scale.
 template <bool aligned>
 static __global__ void __launch_bounds__(MMMS_CONVERT_NT)
 mmms_small_convert_y(
-        const float * __restrict__ x, half2 * __restrict__ y, float * __restrict__ inv_scale, int * __restrict__ counters, const int ncounters,
+        const float * __restrict__ x, half2 * __restrict__ y, float * __restrict__ inv_scale,
         const int ne10, const int ne11, const int ne12, const int64_t s11, const int64_t s12, const int64_t s13) {
     const int64_t col = blockIdx.x;
     const int     i11 = col % ne11;
     const int     i12 = (col / ne11) % ne12;
     const int64_t i13 = (col / ne11) / ne12;
     const int     tid = threadIdx.x;
-
-    if (col == 0 && blockIdx.y == 0) {
-        for (int i = tid; i < ncounters; i += MMMS_CONVERT_NT) {
-            counters[i] = 0;
-        }
-    }
 
     const float * xc = x + i13*s13 + i12*s12 + i11*s11;
 
@@ -640,7 +634,7 @@ static __device__ __forceinline__ void mmms_sc_load(
 #pragma unroll
     for (int i = 0; i < mmms_sc_block<k>::nw; ++i) {
 #if defined(TURING_MMA_AVAILABLE)
-        asm volatile("ld.global.L2::256B.u32 %0, [%1];" : "=r"(w[i]) : "l"(wp + i));
+        asm volatile("ld.global.L1::evict_first.L2::256B.u32 %0, [%1];" : "=r"(w[i]) : "l"(wp + i));
 #else
         w[i] = wp[i];
 #endif // defined(TURING_MMA_AVAILABLE)
@@ -682,6 +676,7 @@ mul_mat_ms_c_small(const mmms_args a, int * __restrict__ counters) {
     using sbl = mmms_sc_block<k>;
     constexpr int nwarps = MMMS_SMALL_NWARPS;
     constexpr int scpb   = QK_MS/MMMS_SC; // super-chunks per block
+    constexpr int nruns  = MMMS_SC/64;    // runs of 16 states per thread and super-chunk
 
     const int lane = threadIdx.x;
     const int warp = threadIdx.y;
@@ -721,6 +716,19 @@ mul_mat_ms_c_small(const mmms_args a, int * __restrict__ counters) {
     for (int isc = sc0 + warp; isc < sc1; isc += nwarps) {
         const bool first = t == 0 && isc % scpb == 0;
 
+        // y of all runs of the super-chunk, then the words of the next super-chunk of the warp
+        uint4 y[nruns][2];
+#pragma unroll
+        for (int u = 0; u < nruns; ++u) {
+            y[u][0] = make_uint4(0, 0, 0, 0);
+            y[u][1] = make_uint4(0, 0, 0, 0);
+            if (has_col) {
+                const int i8 = (isc*MMMS_SC + 64*u + 16*t)/8;
+                y[u][0] = yc[i8 + 0];
+                y[u][1] = yc[i8 + 1];
+            }
+        }
+
         uint32_t w[sbl::nw];
 #pragma unroll
         for (int i = 0; i < sbl::nw; ++i) {
@@ -731,16 +739,9 @@ mul_mat_ms_c_small(const mmms_args a, int * __restrict__ counters) {
             load_sc(isc + nwarps);
         }
 
-        static_for<0, MMMS_SC/64>([&](auto u_) {
+        static_for<0, nruns>([&](auto u_) {
             constexpr int u = decltype(u_)::value;
-            uint4 y0 = make_uint4(0, 0, 0, 0);
-            uint4 y1 = make_uint4(0, 0, 0, 0);
-            if (has_col) {
-                const int i8 = (isc*MMMS_SC + 64*u + 16*t)/8;
-                y0 = yc[i8 + 0];
-                y1 = yc[i8 + 1];
-            }
-            const uint32_t b[8] = {y0.x, y0.y, y0.z, y0.w, y1.x, y1.y, y1.z, y1.w};
+            const uint32_t b[8] = {y[u][0].x, y[u][0].y, y[u][0].z, y[u][0].w, y[u][1].x, y[u][1].y, y[u][1].z, y[u][1].w};
 
             uint32_t wn[bl::nwn];
             mmms_sc_prep<k, u>(w, first, wn);
@@ -812,7 +813,7 @@ mul_mat_ms_c_small(const mmms_args a, int * __restrict__ counters) {
 }
 
 template <int k>
-static void mul_mat_ms_c_small_run(ggml_backend_cuda_context & ctx, mmms_args a, const ggml_tensor * src1) {
+static void mul_mat_ms_c_small_run(ggml_backend_cuda_context & ctx, mmms_args a, const ggml_tensor * src1, const bool convert) {
     GGML_TENSOR_LOCALS(int64_t, ne1, src1, ne);
     GGML_TENSOR_LOCALS(size_t,  nb1, src1, nb);
     cudaStream_t stream = ctx.stream();
@@ -836,16 +837,19 @@ static void mul_mat_ms_c_small_run(ggml_backend_cuda_context & ctx, mmms_args a,
     a.part    = part.get();
     a.nblocks = ksplit;
 
-    {
+    if (ksplit > 1) {
+        CUDA_CHECK(cudaMemsetAsync(counters.get(), 0, ntiles*sizeof(int), stream));
+    }
+
+    if (convert) {
         const bool aligned = (uintptr_t) src1->data % 8 == 0 && nb11 % 8 == 0 && nb12 % 8 == 0 && nb13 % 8 == 0;
         const dim3 grid(ne12*ne13*ne11, (ne10 + MMMS_SMALL_CONVERT_SLICE - 1)/MMMS_SMALL_CONVERT_SLICE);
-        const int ncounters = ksplit > 1 ? ntiles : 0;
         if (aligned) {
             mmms_small_convert_y<true><<<grid, MMMS_CONVERT_NT, 0, stream>>>((const float *) src1->data, (half2 *) a.y,
-                (float *) a.inv_scale, counters.get(), ncounters, ne10, ne11, ne12, nb11/sizeof(float), nb12/sizeof(float), nb13/sizeof(float));
+                (float *) a.inv_scale, ne10, ne11, ne12, nb11/sizeof(float), nb12/sizeof(float), nb13/sizeof(float));
         } else {
             mmms_small_convert_y<false><<<grid, MMMS_CONVERT_NT, 0, stream>>>((const float *) src1->data, (half2 *) a.y,
-                (float *) a.inv_scale, counters.get(), ncounters, ne10, ne11, ne12, nb11/sizeof(float), nb12/sizeof(float), nb13/sizeof(float));
+                (float *) a.inv_scale, ne10, ne11, ne12, nb11/sizeof(float), nb12/sizeof(float), nb13/sizeof(float));
         }
         CUDA_CHECK(cudaGetLastError());
     }
@@ -860,22 +864,40 @@ static void ggml_cuda_mul_mat_ms_small(ggml_backend_cuda_context & ctx, const gg
 
     GGML_ASSERT(ne00 % MMMS_SC == 0);
 
-    ggml_cuda_pool_alloc<half2> y(ctx.pool(), ne12*ne13*ne11*ne10/2);
-    ggml_cuda_pool_alloc<float> inv_scale(ctx.pool(), ne12*ne13*ne11);
+    // the f16 y is kept for the next matmuls of this graph evaluation that read src1 (Q, K, V; gate, up). Only for the
+    // MUL_MAT nodes themselves (callers such as MUL_MAT_ID hold pool memory of their own) and with one stream (the pools
+    // are per stream).
+    const size_t y_size    = (size_t) ne12*ne13*ne11*ne10*sizeof(half);
+    const size_t y_alloc   = y_size + (size_t) ne12*ne13*ne11*sizeof(float);
+    const bool   use_cache = dst->op == GGML_OP_MUL_MAT && ctx.stream_context().concurrent_events.empty();
+    const bool   cached    = use_cache && ctx.mmms_y_src == src1 && ctx.mmms_y;
+    ggml_cuda_pool_alloc<char> y_tmp(ctx.pool());
+    char * yb;
+    if (cached) {
+        yb = ctx.mmms_y->get();
+    } else if (use_cache) {
+        ctx.mmms_y.reset();
+        ctx.mmms_y     = std::make_unique<ggml_cuda_pool_alloc<char>>(ctx.pool(), y_alloc);
+        ctx.mmms_y_src = src1;
+        yb = ctx.mmms_y->get();
+    } else {
+        yb = y_tmp.alloc(y_alloc);
+    }
 
     mmms_args a = {};
-    a.x = (const char *) src0->data; a.y = y.get(); a.inv_scale = inv_scale.get(); a.dst = (float *) dst->data; a.part = nullptr;
+    a.x = (const char *) src0->data; a.y = (const half2 *) yb; a.inv_scale = (const float *) (yb + y_size);
+    a.dst = (float *) dst->data; a.part = nullptr;
     a.ne00 = ne00; a.ne01 = ne01; a.s01 = nb01; a.s02 = nb02; a.s03 = nb03;
     a.ne1 = ne11; a.ne11_pad = ne11; a.ne12 = ne12; a.ne13 = ne13; a.r2 = ne12/ne02; a.r3 = ne13/ne03;
     a.s1 = nb1/sizeof(float); a.s2 = nb2/sizeof(float); a.s3 = nb3/sizeof(float);
 
     switch (src0->type) {
-        case GGML_TYPE_MS_C1: mul_mat_ms_c_small_run<1>(ctx, a, src1); break;
-        case GGML_TYPE_MS_C2: mul_mat_ms_c_small_run<2>(ctx, a, src1); break;
-        case GGML_TYPE_MS_C3: mul_mat_ms_c_small_run<3>(ctx, a, src1); break;
-        case GGML_TYPE_MS_C4: mul_mat_ms_c_small_run<4>(ctx, a, src1); break;
-        case GGML_TYPE_MS_C5: mul_mat_ms_c_small_run<5>(ctx, a, src1); break;
-        case GGML_TYPE_MS_C6: mul_mat_ms_c_small_run<6>(ctx, a, src1); break;
+        case GGML_TYPE_MS_C1: mul_mat_ms_c_small_run<1>(ctx, a, src1, !cached); break;
+        case GGML_TYPE_MS_C2: mul_mat_ms_c_small_run<2>(ctx, a, src1, !cached); break;
+        case GGML_TYPE_MS_C3: mul_mat_ms_c_small_run<3>(ctx, a, src1, !cached); break;
+        case GGML_TYPE_MS_C4: mul_mat_ms_c_small_run<4>(ctx, a, src1, !cached); break;
+        case GGML_TYPE_MS_C5: mul_mat_ms_c_small_run<5>(ctx, a, src1, !cached); break;
+        case GGML_TYPE_MS_C6: mul_mat_ms_c_small_run<6>(ctx, a, src1, !cached); break;
         default:
             GGML_ABORT("fatal error");
     }

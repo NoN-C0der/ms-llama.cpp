@@ -1610,11 +1610,18 @@ struct ggml_backend_cuda_context {
     }
 
     // q8_1 copy of q8_1_cache_src, written by an op for the mat-vecs that read the tensor later in the same graph evaluation
-    // it must be the only pool allocation held across ops, as the VMM pool frees in reverse order of allocation
+    // it and mmms_y must be the only pool allocations held across ops, as the VMM pool frees in reverse order of allocation
     const ggml_tensor * q8_1_cache_src = nullptr;
     std::unique_ptr<ggml_cuda_pool_alloc<char>> q8_1_cache;
 
+    // f16 y of mmms_y_src for the MS_C small-batch matmuls (mmms.cu) that read the tensor later in the same graph evaluation,
+    // allocated after q8_1_cache and freed before it
+    const ggml_tensor * mmms_y_src = nullptr;
+    std::unique_ptr<ggml_cuda_pool_alloc<char>> mmms_y;
+
     void q8_1_cache_reset() {
+        mmms_y_src = nullptr;
+        mmms_y.reset();
         q8_1_cache_src = nullptr;
         q8_1_cache.reset();
     }
