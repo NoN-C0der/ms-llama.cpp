@@ -1,23 +1,24 @@
 # Same size as unsloth. Half the quality loss.
 
-**MS (Mad Shift)** quants have **1.6-2.3x lower quality loss** than unsloth's files of the same size: **1.61-1.63x** at
-the low tiers, **1.90-2.31x** from MS3.7 up. Quality loss = KL divergence from the original BF16 model (Qwen3.8-27B).
+**MS (Mad Shift)** quants have **1.61-2.31x lower quality loss** than unsloth's files of about the same size: **1.61-1.63x**
+at the low tiers, **1.90-2.31x** from MS3.7 up. Quality loss = KL divergence from the original BF16 model (Qwen3.8-27B).
 **ms-llama.cpp** is the llama.cpp fork that runs them.
 
-| MS file | Size | KL divergence | unsloth file of the same size | its KL divergence | MS is |
-|---|---|---|---|---|---|
-| MS5 | 19.41 GB | 0.00153 | UD-Q5_K_M | 0.00354 | **2.31x** closer |
-| MS4.3 | 17.30 GB | 0.00298 | UD-Q4_K_XL (UD3.1) | 0.00585 | **1.96x** closer |
-| MS4 | 16.11 GB | 0.00442 | UD-Q4_K_M | 0.00899 | **2.04x** closer |
-| MS3.7 | 15.00 GB | 0.00623 | UD-Q4_K_S | 0.01182 | **1.90x** closer |
-| MS3.5 | 13.89 GB | 0.01000 | UD-IQ4_XS | 0.01614 | **1.61x** closer |
-| MS3 | 12.79 GB | 0.01570 | UD-Q3_K_XL | 0.02554 | **1.63x** closer |
-| MS2.7 | 10.58 GB | 0.03406 | UD-IQ3_XXS | 0.05502 | **1.62x** closer |
+| MS file | Size | KL divergence | unsloth UD3 file | its size | its KL divergence | MS is |
+|---|---|---|---|---|---|---|
+| MS5 | 19.41 GB | 0.00153 | UD-Q5_K_M | 19.42 GB | 0.00354 | **2.31x** closer |
+| MS4.3 | 17.30 GB | 0.00298 | UD-Q4_K_XL | 17.21 GB | 0.00646 | **2.16x** closer |
+| MS4 | 16.11 GB | 0.00442 | UD-Q4_K_M | 16.11 GB | 0.00899 | **2.04x** closer |
+| MS3.7 | 15.00 GB | 0.00623 | UD-Q4_K_S | 15.01 GB | 0.01182 | **1.90x** closer |
+| MS3.5 | 13.89 GB | 0.01000 | UD-IQ4_XS | 13.90 GB | 0.01614 | **1.61x** closer |
+| MS3 | 12.79 GB | 0.01570 | UD-Q3_K_XL | 12.80 GB | 0.02554 | **1.63x** closer |
+| MS2.7 | 10.58 GB | 0.03406 | UD-IQ3_XXS | 10.58 GB | 0.05502 | **1.62x** closer |
 
-Mean KL divergence over English wiki, web, code and math text the files were not made from; lower is better. unsloth's sizes
-are without the MTP layer built into their files. unsloth updated four of these files on 2026-11-12; against the new
-versions, MS3 is 1.60x and MS4 1.84x closer. Method, unsloth revisions and per-text numbers:
-[model card](https://huggingface.co/devvexus/Qwen3.8-27B-MS).
+Compared against Unsloth Dynamic 3 (UD3): unsloth's files at revision 4ca72078 (August 2026). Mean KL divergence over
+English wiki, web, code and math text the files were not made from; lower is better. unsloth's sizes are without the MTP
+layer built into their files. Every MS file is no larger than its unsloth file except MS4.3, which is 0.09 GB larger.
+unsloth updated four of these files on 2026-11-12; against the new versions, MS3 is 1.60x and MS4 1.84x closer. Method
+and per-text numbers: [model card](https://huggingface.co/devvexus/Qwen3.8-27B-MS).
 
 ## Run it now
 
