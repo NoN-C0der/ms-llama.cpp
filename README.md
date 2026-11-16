@@ -1,9 +1,17 @@
 # Same size as unsloth. 1.6-2.3x lower quality loss.
 
-**MS (Mad Shift)** quants have **1.61-2.31x lower quality loss** than unsloth's UD3 files of about the same size:
-**1.61-1.63x** at the low tiers (MS2.7, MS3, MS3.5), **1.90-2.31x** from MS3.7 up. Quality loss = KL divergence from the
-original BF16 model (Qwen3.8-27B).
-**ms-llama.cpp** is the llama.cpp fork that runs them.
+**MS (Mad Shift)** quants of [Qwen3.8-27B](https://huggingface.co/devvexus/Qwen3.8-27B-MS), and **ms-llama.cpp**, the llama.cpp fork that runs them.
+
+- **Accuracy:** 1.61-2.31x lower KL divergence than unsloth's UD3 file of the same size (1): 1.61-1.63x for MS2.7-MS3.5, 1.90-2.31x for MS3.7-MS5.
+- **Speed:** generation about the same as unsloth (98-100%) (2). MTP doubles it: 2.0-2.2x faster than without MTP, MS4.3 31.8 tokens/s, MS2.7 42.7 tokens/s on an RTX Spark (3).
+- **Memory:** every file no larger than its unsloth file, except MS4.3 (+0.09 GB) (1). MTP adds ~0.9 GiB; unsloth's MTP file adds ~1.4 GiB on the same file (~1.7 GiB with their own files) (3).
+- **MTP:** our own MS-coded MTP file, 0.30 GB, one for every size (it borrows the loaded file's token table and output head); unsloth's is 1.37 GB. It drafts as well as unsloth's 4.5x larger MTP file and runs a little faster: on the same MS4.3 file 62.9% vs 62.5% of drafts accepted, 31.8 vs 29.7 tokens/s (3).
+
+<sub>(1) KL divergence from the original BF16 model, mean over four English texts. UD3 = Unsloth Dynamic 3, unsloth's files at revision `4ca72078` (August 2026); their sizes without their 351 MB MTP block. (2) Chat benchmark without MTP, MS and unsloth files both on ms-llama.cpp. (3) RTX Spark (GB10), 20 chat prompts x 256 tokens, greedy; unsloth's files with their own MTP file, also on ms-llama.cpp; GPU memory from nvidia-smi.</sub>
+
+![KL divergence vs size](docs/images/qwen3.8-27b_kld.png)
+
+![MTP: one MS file for every size vs unsloth's](docs/images/qwen3.8-27b_mtp.png)
 
 | MS file | Size | KL divergence | unsloth UD3 file | its size | its KL divergence | MS is |
 |---|---|---|---|---|---|---|
@@ -89,31 +97,35 @@ These repositories are private until launch.
 
 ## MTP: one small file, twice the speed
 
-One 0.30 GB MTP file works with every tier: it holds only the MTP block and borrows the loaded tier's token table and
-output head. The one-line command turns it on (`--spec-type draft-mtp`). The model checks every drafted token.
+One 0.30 GB MTP file, `mtp-Qwen3.8-27B-MS.gguf`, works with every tier: it holds only the MTP block and borrows the loaded
+tier's token table and output head. `--spec-type draft-mtp` turns it on. The model checks every drafted token.
 
-RTX Spark (GB10), 20 chat prompts x 256 tokens, greedy, tokens per second:
+RTX Spark (GB10), 20 chat prompts x 256 tokens, greedy, both on ms-llama.cpp; unsloth's files with their own MTP file:
 
-| Model | without MTP | with MTP | speedup | extra GPU memory for MTP |
+| Model + MTP file | tokens/s | speedup | drafts accepted | extra GPU memory |
 |---|---|---|---|---|
-| **MS4.3** + our 0.30 GB MTP file | 14.4 | **31.6** | **2.20x** | ~0.9 GiB |
-| **MS2.7** + our 0.30 GB MTP file | 20.8 | **43.7** | **2.10x** | ~0.9 GiB |
-| unsloth UD-Q4_K_XL (UD3.1, revision ce331efc) + their 1.37 GB MTP file | 14.7 | 32.1 | 2.18x | ~1.7 GiB |
-| unsloth UD-IQ3_XXS + their 1.37 GB MTP file | 21.4 | 38.9 | 1.82x | ~1.7 GiB |
+| **MS4.3 + ours** | **31.8** | 2.16x | 62.9% | +0.91 GiB |
+| UD-Q4_K_XL + unsloth's | 32.4 | 2.19x | 63.8% | +1.69 GiB |
+| **MS2.7 + ours** | **42.7** | 2.00x | 65.9% | +0.87 GiB |
+| UD-IQ3_XXS + unsloth's | 39.9 | 1.83x | 62.0% | +1.69 GiB |
 
-With MTP on, MS4.3 runs at 98% of the speed of unsloth's UD3.1 UD-Q4_K_XL with its MTP file, and MS2.7 at 112% of
-UD-IQ3_XXS's. Extra GPU memory is nvidia-smi with MTP on minus off (GiB = 1024 MiB), measured for exactly these pairings; unsloth's MTP file
-loaded with MS4.3 instead adds ~1.3 GiB (see the model card).
+With MTP on, MS4.3 runs at 98% and MS2.7 at 107% of unsloth's speed. Extra GPU memory is nvidia-smi with MTP on minus off
+(GiB = 1024 MiB); unsloth's MTP file loaded with MS4.3 instead adds ~1.4 GiB.
 
 ## Speed
 
-- **Generation:** about the same as unsloth (97-98%). Without MTP in the chat benchmark above, on the same engine: MS4.3
-  14.40 vs 14.72 tokens/s, MS2.7 20.80 vs 21.36.
-- **Prompt processing** on the RTX Spark (GB10), relative to unsloth's file of the same size: MS2.7 1.03x, MS3 1.00x,
-  MS4 0.94x, MS4.3 0.92x against UD-Q4_K_XL (UD3.1, revision ce331efc); a kernel limit on that machine.
+On the RTX Spark (GB10), both on ms-llama.cpp, against unsloth's UD3 file of the same size:
 
-The MS4.3 speed comparisons (MTP, generation, prompt processing) use unsloth's current UD-Q4_K_XL (the UD3.1 file,
-revision ce331efc), the file MS4.3 was sized to.
+| MS file | unsloth UD3 file | generation, tokens/s (MS vs unsloth) | prompt processing |
+|---|---|---|---|
+| MS4.3 | UD-Q4_K_XL | 14.74 vs 14.80 (1.00x) | 0.95x |
+| MS4 | UD-Q4_K_M | 15.75 vs 15.91 (0.99x) | 0.92x |
+| MS3 | UD-Q3_K_XL | 19.00 vs 19.10 (0.99x) | 1.00x |
+| MS2.7 | UD-IQ3_XXS | 21.36 vs 21.84 (0.98x) | 1.06x |
+
+Generation is about the same as unsloth (98-100%): chat benchmark without MTP (20 prompts x 256 tokens, greedy). Prompt
+processing: `llama-bench -p 512`, median of 3 alternating rounds; MS4 and MS4.3 are a little slower there because of a
+kernel limit on that machine.
 
 ## What is MS
 
