@@ -168,6 +168,8 @@ calibration-aware, layer-by-layer conversion. MS uses the bitshift-trellis const
 the bitshift-trellis construction described in QTIP. This repository runs MS files; format details are in
 [docs/ms.md](docs/ms.md).
 
+**Making MS files.** The released MS files are made with a separate conversion tool that is not published. A lightweight MS encoder for this fork's `llama-quantize`, built for fast conversion, is in development, so that anyone can make MS files of most models on their own hardware.
+
 ## Hardware
 
 - **NVIDIA GPUs (CUDA):** supported. The Windows x64 build needs an RTX 20 series or newer card; the ARM64 build is for
