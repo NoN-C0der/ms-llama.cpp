@@ -8,9 +8,10 @@ This fork of llama.cpp adds the MS (Mad Shift) weight format, written by Matthew
   handling in the graph;
 - split embedding tables and split output heads (msffn.emb_split_order, output_lo).
 
-The trellis code builds on QTIP (A. Tseng, Q. Sun, D. Hou, C. De Sa, "QTIP: Quantization with Trellises and Incoherence
-Processing", NeurIPS 2024, arXiv:2406.11235): the bitshift trellis and its computed "1MAD" decoder.
-MS is an independent implementation written from the QTIP paper; it contains no code from the QTIP or QuIP# repositories.
+MS's trellis code uses the bitshift trellis and the computed "1MAD" decoder of QTIP (A. Tseng, Q. Sun, D. Hou, C. De Sa,
+"QTIP: Quantization with Trellises and Incoherence Processing", NeurIPS 2024, arXiv:2406.11235).
+MS's code was written independently and contains no code from the QTIP or QuIP# repositories; it uses the 1MAD constants as
+published in the QTIP paper.
 
 The MS additions are distributed under the same MIT License as llama.cpp (see LICENSE). When you copy or adapt them, keep
 the LICENSE file with its copyright lines, as the MIT License requires, and please keep this notice.

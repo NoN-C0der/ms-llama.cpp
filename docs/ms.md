@@ -33,7 +33,7 @@ cmake --build build --config Release -j
 
 ## Credit
 
-MS's trellis code builds on QTIP: A. Tseng, Q. Sun, D. Hou, C. De Sa, *QTIP: Quantization with Trellises and Incoherence
+MS's trellis code uses QTIP's bitshift trellis and 1MAD decoder: A. Tseng, Q. Sun, D. Hou, C. De Sa, *QTIP: Quantization with Trellises and Incoherence
 Processing*, NeurIPS 2024, [arXiv:2406.11235](https://arxiv.org/abs/2406.11235). The MS format, its llama.cpp integration and
 the MS files are by Matthew Priester; see `NOTICE`. The Qwen3.8-27B MS files also contain some tensors taken unchanged from
 unsloth's GGUFs (see their model card).
