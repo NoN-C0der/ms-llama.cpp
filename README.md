@@ -4,11 +4,11 @@
 
 - **Accuracy:** 1.61-2.31x lower KL divergence than unsloth's UD3 file of the same size (1): 1.61-1.63x for MS2.7-MS3.5, 1.90-2.31x for MS3.7-MS5.
 - **Top-1:** the most likely next token matches the original BF16 model's 93.8-98.7% of the time, vs 91.8-97.9% for unsloth's UD3 file of the same size: 22-35% fewer mismatches (1).
-- **Speed:** generation about the same as unsloth (98-100%) (2). MTP doubles it: 2.0-2.2x faster than without MTP, MS4.3 31.8 tokens/s, MS2.7 42.7 tokens/s on an RTX Spark (3).
+- **Speed:** generation about the same as unsloth (98-100% on an RTX Spark, 97% on an RTX 4080 SUPER) (2)(4). MTP doubles it: 2.0-2.2x faster than without MTP, MS4.3 31.8 tokens/s, MS2.7 42.7 tokens/s on an RTX Spark (3); MS2.7 101 vs 97 tokens/s for unsloth's same-size file on an RTX 4080 SUPER (4).
 - **Memory:** every file no larger than its unsloth file, except MS4.3 (+0.09 GB) (1). MTP adds ~0.9 GiB; unsloth's MTP file adds ~1.4 GiB on the same file (~1.7 GiB with their own files) (3).
 - **MTP:** our own MS-coded MTP file, 0.30 GB, one for every size (it borrows the loaded file's token table and output head); unsloth's is 1.37 GB. It drafts as well as unsloth's 4.5x larger MTP file and runs a little faster: on the same MS4.3 file 62.9% vs 62.5% of drafts accepted, 31.8 vs 29.7 tokens/s (3).
 
-<sub>(1) KL divergence from the original BF16 model, mean over four English texts; top-1 = how often the quantized model's most likely next token is the BF16 model's. UD3 = Unsloth Dynamic 3, unsloth's files at revision `4ca72078` (August 2026); their sizes without their 351 MB MTP block. (2) Chat benchmark without MTP, MS and unsloth files both on ms-llama.cpp. (3) RTX Spark (GB10), 20 chat prompts x 256 tokens, greedy; unsloth's files with their own MTP file, also on ms-llama.cpp; GPU memory from nvidia-smi.</sub>
+<sub>(1) KL divergence from the original BF16 model, mean over four English texts; top-1 = how often the quantized model's most likely next token is the BF16 model's. UD3 = Unsloth Dynamic 3, unsloth's files at revision `4ca72078` (August 2026); their sizes without their 351 MB MTP block. (2) Chat benchmark without MTP on an RTX Spark, MS and unsloth files both on ms-llama.cpp. (3) RTX Spark (GB10), 20 chat prompts x 256 tokens, greedy; unsloth's files with their own MTP file, also on ms-llama.cpp; GPU memory from nvidia-smi. (4) RTX 4080 SUPER 16 GB, same benchmark, x64 release build, medians of 3; unsloth's UD-IQ3_XXS with their MTP file reaches 97.1 tokens/s there.</sub>
 
 ![KL divergence vs size](docs/images/qwen3.8-27b_kld.png)
 
@@ -131,6 +131,15 @@ RTX Spark (GB10), 20 chat prompts x 256 tokens, greedy, both on ms-llama.cpp; un
 With MTP on, MS4.3 runs at 98% and MS2.7 at 110% of unsloth's speed. Extra GPU memory is nvidia-smi with MTP on minus off
 (GiB = 1024 MiB); unsloth's MTP file loaded with MS4.3 instead adds ~1.4 GiB.
 
+On an RTX 4080 SUPER (16 GB), same benchmark, x64 release build, medians of 3:
+
+| Model + MTP file | tokens/s without MTP | with MTP | speedup | drafts accepted | extra GPU memory |
+|---|---|---|---|---|---|
+| **MS2.7 + ours** | 51.1 | **101.2** | 1.98x | 65.7% | +0.91 GiB |
+| UD-IQ3_XXS + unsloth's | 53.0 | 97.1 | 1.83x | 62.3% | +1.67 GiB |
+
+MS2.7 runs at 104% of unsloth's MTP speed there.
+
 ## Speed
 
 On the RTX Spark (GB10), both on ms-llama.cpp, against unsloth's UD3 file of the same size:
@@ -141,10 +150,13 @@ On the RTX Spark (GB10), both on ms-llama.cpp, against unsloth's UD3 file of the
 | MS4 | UD-Q4_K_M | 15.75 vs 15.91 (0.99x) | 0.92x |
 | MS3 | UD-Q3_K_XL | 19.00 vs 19.10 (0.99x) | 1.00x |
 | MS2.7 | UD-IQ3_XXS | 21.36 vs 21.84 (0.98x) | 1.06x |
+| MS2.7, RTX 4080 SUPER | UD-IQ3_XXS | 51.13 vs 52.95 (0.97x) | 0.88x |
 
-Generation is about the same as unsloth (98-100%): chat benchmark without MTP (20 prompts x 256 tokens, greedy). Prompt
-processing: `llama-bench -p 512`, median of 3 alternating rounds; MS4 and MS4.3 are a little slower there because of a
-kernel limit on that machine.
+Generation is about the same as unsloth (98-100% on the RTX Spark, 97% on the RTX 4080 SUPER): chat benchmark without
+MTP (20 prompts x 256 tokens, greedy). Prompt processing: `llama-bench -p 512`, median of 3 alternating rounds; on the
+RTX Spark MS4 and MS4.3 are a little slower because of a kernel limit on that machine; on the RTX 4080 SUPER, 0.88x
+with the default settings (f16 sums on GeForce). Quality numbers use f32 sums; GeForce cards default to f16 sums,
+which read prompts faster and measured within 0.2% KLD (Qwen3.5-2B MS4, wiki text, earlier build).
 
 ## What is MS
 
