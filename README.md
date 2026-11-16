@@ -47,25 +47,27 @@ never touches an existing llama.cpp.
 **2. Run the file that fits your GPU.** The first run downloads it and the 0.30 GB MTP file from Hugging Face. Then a chat
 page and an API run on **http://localhost:8080**. Stop with Ctrl+C; run the same line to start again.
 
-12-16 GB (RTX 4070 Ti Super, 4080, 5070 Ti, 5080): **MS2.7**, 10.6 GB
+16 GB (RTX 4070 Ti Super, 4080, 5070 Ti, 5080): **MS2.7**, 10.6 GB
 
 ```powershell
-& "$env:LOCALAPPDATA\ms-llama\llama-server.exe" -hf devvexus/Qwen3.8-27B-MS:MS2.7 --spec-type draft-mtp --port 8080
+& "$env:LOCALAPPDATA\ms-llama\llama-server.exe" -hf devvexus/Qwen3.8-27B-MS:MS2.7 --spec-type draft-mtp -c 32768 --port 8080
 ```
 
 24 GB (RTX 3090, 4090): **MS4.3**, 17.3 GB
 
 ```powershell
-& "$env:LOCALAPPDATA\ms-llama\llama-server.exe" -hf devvexus/Qwen3.8-27B-MS:MS4.3 --spec-type draft-mtp --port 8080
+& "$env:LOCALAPPDATA\ms-llama\llama-server.exe" -hf devvexus/Qwen3.8-27B-MS:MS4.3 --spec-type draft-mtp -c 32768 --port 8080
 ```
 
 32 GB or more (RTX 5090, RTX Spark, DGX Spark): **MS5**, 19.4 GB
 
 ```powershell
-& "$env:LOCALAPPDATA\ms-llama\llama-server.exe" -hf devvexus/Qwen3.8-27B-MS:MS5 --spec-type draft-mtp --port 8080
+& "$env:LOCALAPPDATA\ms-llama\llama-server.exe" -hf devvexus/Qwen3.8-27B-MS:MS5 --spec-type draft-mtp -c 32768 --port 8080
 ```
 
-On a 12 GB card, MS2.7 runs with a shorter context (the server fits it by itself). Any other file by name:
+`-c 32768` gives a 32k-token context; raise it if your GPU has room. Set it yourself, as with stock llama.cpp: on
+Windows the automatic sizing can overestimate a display GPU's free memory, and a model that spills into system RAM
+runs very slowly.  Any other file by name:
 `-hf devvexus/Qwen3.8-27B-MS --hf-file MS3.7/Qwen3.8-27B-MS3.7.gguf`. A .gguf you downloaded yourself:
 `-m <file>.gguf -md mtp-Qwen3.8-27B-MS.gguf --spec-type draft-mtp`.
 
@@ -76,7 +78,7 @@ git clone https://github.com/devvexus/ms-llama.cpp
 cd ms-llama.cpp
 cmake -B build -DGGML_CUDA=ON -DCMAKE_BUILD_TYPE=Release   # CPU only (and macOS): drop -DGGML_CUDA=ON
 cmake --build build --config Release -j
-./build/bin/llama-server -hf devvexus/Qwen3.8-27B-MS:MS2.7 --spec-type draft-mtp --port 8080   # or :MS4.3, :MS5
+./build/bin/llama-server -hf devvexus/Qwen3.8-27B-MS:MS2.7 --spec-type draft-mtp -c 32768 --port 8080   # or :MS4.3, :MS5
 ```
 
 ## Use it in your apps
