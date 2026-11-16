@@ -69,7 +69,7 @@ page and an API run on **http://localhost:8080**. Stop with Ctrl+C; run the same
 Windows the automatic sizing can overestimate a display GPU's free memory, and a model that spills into system RAM
 runs very slowly. `-np 1` serves one chat at a time: every extra parallel slot needs its own copy of the model's recurrent state, which can push layers off the GPU and slow generation down a lot. Any other file by name:
 `-hf devvexus/Qwen3.8-27B-MS --hf-file MS3.7/Qwen3.8-27B-MS3.7.gguf`. A .gguf you downloaded yourself:
-`-m <file>.gguf -md mtp-Qwen3.8-27B-MS.gguf --spec-type draft-mtp`.
+`-m <file>.gguf -md mtp-Qwen3.8-27B-MS.gguf --spec-type draft-mtp`. After the first run, you can add `--offline` so the server starts without checking Hugging Face; that check can take a few minutes. On Windows the first download may print 'failed to create symlink ... switching to degraded mode'; it is harmless: the Hugging Face cache just can't use symlinks, so updated files may take extra disk space.
 
 **Images (optional).** The vision encoder, `vision/mmproj-Qwen3.8-27B-F16.gguf` (0.93 GB, F16), lets the model read
 images. `-hf` does not load it by itself: add `--mmproj-url` with its address, or `--mmproj <file>` for a downloaded
