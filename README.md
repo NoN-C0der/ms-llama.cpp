@@ -15,7 +15,8 @@ the low tiers, **1.90-2.31x** from MS3.7 up. Quality loss = KL divergence from t
 | MS2.7 | 10.58 GB | 0.03406 | UD-IQ3_XXS | 0.05502 | **1.62x** closer |
 
 Mean KL divergence over English wiki, web, code and math text the files were not made from; lower is better. unsloth's sizes
-are without the MTP layer built into their files. Method, unsloth revisions and per-text numbers:
+are without the MTP layer built into their files. unsloth updated four of these files on 2026-11-12; against the new
+versions, MS3 is 1.60x and MS4 1.84x closer. Method, unsloth revisions and per-text numbers:
 [model card](https://huggingface.co/devvexus/Qwen3.8-27B-MS).
 
 ## Run it now
