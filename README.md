@@ -1,37 +1,137 @@
-# ms-llama.cpp
+# Same size as unsloth. Half the quality loss.
 
-## What's ms-llama.cpp?
+**MS (Mad Shift)** quants have **1.6-2.3x lower quality loss** than unsloth's files of the same size: **1.61-1.63x** at
+the low tiers, **1.90-2.31x** from MS3.7 up. Quality loss = KL divergence from the original BF16 model (Qwen3.8-27B).
+**ms-llama.cpp** is the llama.cpp fork that runs them.
 
-A fork of [llama.cpp](https://github.com/ggml-org/llama.cpp) that runs **MS (Mad Shift)** quantized models. Everything else works
-exactly like llama.cpp: the same tools (`llama-cli`, `llama-server`, `llama-bench`, ...), the same GGUF models, CPU and CUDA.
+| MS file | Size | KL divergence | unsloth file of the same size | its KL divergence | MS is |
+|---|---|---|---|---|---|
+| MS5 | 19.41 GB | 0.00153 | UD-Q5_K_M | 0.00354 | **2.31x** closer |
+| MS4.3 | 17.30 GB | 0.00298 | UD-Q4_K_XL (UD3.1) | 0.00585 | **1.96x** closer |
+| MS4 | 16.11 GB | 0.00442 | UD-Q4_K_M | 0.00899 | **2.04x** closer |
+| MS3.7 | 15.00 GB | 0.00623 | UD-Q4_K_S | 0.01182 | **1.90x** closer |
+| MS3.5 | 13.89 GB | 0.01000 | UD-IQ4_XS | 0.01614 | **1.61x** closer |
+| MS3 | 12.79 GB | 0.01570 | UD-Q3_K_XL | 0.02554 | **1.63x** closer |
+| MS2.7 | 10.58 GB | 0.03406 | UD-IQ3_XXS | 0.05502 | **1.62x** closer |
 
-## What's MS (Mad Shift)?
+Mean KL divergence over English wiki, web, code and math text the files were not made from; lower is better. unsloth's sizes
+are without the MTP layer built into their files. Method, unsloth revisions and per-text numbers:
+[model card](https://huggingface.co/devvexus/Qwen3.8-27B-MS).
 
-MS is a new GGUF quantization format created by **Matthew Priester** ([GitHub](https://github.com/devvexus),
-[ORCID](https://orcid.org/0009-0000-0032-5292)). **At the same file size, MS models stay far closer to the original model than
-standard quants and unsloth's dynamic quants**: on Qwen3.5-2B, every MS file has 4-9x lower KL divergence to the original BF16
-model than the unsloth file of the same or larger size.
+## Run it now
 
-- **How:** every large weight matrix is stored as a bitshift-trellis code (the code of QTIP, Tseng et al. 2024) after a random
-  Hadamard rotation, produced by MS's own calibration-aware conversion. Details: [docs/ms.md](docs/ms.md). To our knowledge, MS (Mad Shift) is the first GGUF format built on QTIP's bitshift trellis code.
-- **Models:** [huggingface.co/devvexus](https://huggingface.co/devvexus) ("MS Quants" collection).
-- **Credit and license:** [NOTICE](NOTICE). MS is MIT-licensed like llama.cpp; please credit *MS (Mad Shift) by Matthew Priester*.
+Windows with an NVIDIA GPU: paste this one line into PowerShell.
 
-## Run an MS model
+```powershell
+$d="$env:LOCALAPPDATA\ms-llama"; if(!(Test-Path "$d\llama-server.exe")){$z=if($env:PROCESSOR_ARCHITECTURE -eq "ARM64"){"arm64-cuda"}else{"x64-cuda12"}; ni -ItemType Directory -Force $d|Out-Null; curl.exe -L -o "$d\ms.zip" "https://github.com/devvexus/ms-llama.cpp/releases/latest/download/ms-llama-win-$z.zip"; tar -xf "$d\ms.zip" -C $d}; & "$d\llama-server.exe" -hf devvexus/Qwen3.8-27B-MS:MS4.3 --spec-type draft-mtp --port 8080
+```
+
+What it does:
+
+- Installs the prebuilt engine (x64 or ARM64, picked for you; CUDA and C++ runtimes included) into
+  `%LOCALAPPDATA%\ms-llama`. It never touches an existing llama.cpp. The next run skips this step.
+- Downloads Qwen3.8-27B-MS4.3 and the MTP file from Hugging Face (into the Hugging Face cache, once).
+- Serves a chat page and an API on **http://localhost:8080**. Stop it with Ctrl+C; paste the same line to start it again.
+
+Pick the file for your GPU by changing only the tag after the colon:
+
+| GPU memory | Tag |
+|---|---|
+| 32 GB or more | `MS5` |
+| 24 GB | `MS4.3` |
+| 16 GB | `MS2.7` |
+| 12 GB | `MS2.7` with a short context (the server shortens it to fit by itself, or add `-c 4096`) |
+
+`MS3.5` and `MS3.7` work as tags too. For MS3 and MS4 name the file instead, since the tag `MS4` also matches MS4.3:
+`-hf devvexus/Qwen3.8-27B-MS --hf-file MS4/Qwen3.8-27B-MS4.gguf`.
+
+**Linux and macOS:** build from source like llama.cpp, then run the same server:
 
 ```bash
 git clone https://github.com/devvexus/ms-llama.cpp
 cd ms-llama.cpp
-cmake -B build -DGGML_CUDA=ON -DCMAKE_BUILD_TYPE=Release   # CPU only: drop -DGGML_CUDA=ON
+cmake -B build -DGGML_CUDA=ON -DCMAKE_BUILD_TYPE=Release   # CPU only (and macOS): drop -DGGML_CUDA=ON
 cmake --build build --config Release -j
-./build/bin/llama-cli -m <MS model>.gguf -ngl 99
+./build/bin/llama-server -hf devvexus/Qwen3.8-27B-MS:MS4.3 --spec-type draft-mtp --port 8080
 ```
 
-Stock llama.cpp, Ollama and LM Studio cannot load MS files yet.
+## Use it in your apps
+
+With the server running:
+
+- **Claude Code:** set `ANTHROPIC_BASE_URL=http://localhost:8080` and `ANTHROPIC_AUTH_TOKEN` to any value, then start
+  `claude`. The server speaks Anthropic's Messages API (`/v1/messages`).
+  PowerShell: `$env:ANTHROPIC_BASE_URL="http://localhost:8080"; $env:ANTHROPIC_AUTH_TOKEN="local"; claude`
+- **OpenAI-compatible apps:** base URL `http://localhost:8080/v1`, any API key.
+- **Apps that run llama.cpp themselves** (they ask for a llama.cpp folder or a `llama-server` path): point them at
+  `%LOCALAPPDATA%\ms-llama`.
+- **Ollama:** Ollama can't load MS files itself (nor can LM Studio or stock llama.cpp). If your app can use an
+  OpenAI-compatible connection instead of Ollama, give it `http://localhost:8080/v1`.
+
+## Models
+
+- [devvexus/Qwen3.8-27B-MS](https://huggingface.co/devvexus/Qwen3.8-27B-MS): 7 tiers, MS2.7 (10.6 GB) to MS5 (19.4 GB),
+  plus one MTP file, `MTP/mtp-Qwen3.8-27B-MS.gguf` (0.30 GB).
+- [devvexus/Qwen3.5-2B-MS](https://huggingface.co/devvexus/Qwen3.5-2B-MS).
+
+These repositories are private until launch.
+
+## MTP: one small file, twice the speed
+
+One 0.30 GB MTP file works with every tier: it holds only the MTP block and borrows the loaded tier's token table and
+output head. The one-line command turns it on (`--spec-type draft-mtp`). The model checks every drafted token.
+
+RTX Spark (GB10), 20 chat prompts x 256 tokens, greedy, tokens per second:
+
+| Model | without MTP | with MTP | speedup | extra GPU memory for MTP |
+|---|---|---|---|---|
+| **MS4.3** + our 0.30 GB MTP file | 14.4 | **31.6** | **2.20x** | ~0.9 GB |
+| **MS2.7** + our 0.30 GB MTP file | 20.8 | **43.7** | **2.10x** | ~0.9 GB |
+| unsloth UD-Q4_K_XL + their 1.37 GB MTP file | 14.7 | 32.1 | 2.18x | ~1.7 GB |
+| unsloth UD-IQ3_XXS + their 1.37 GB MTP file | 21.4 | 38.9 | 1.82x | ~1.7 GB |
+
+With MTP, MS4.3 runs at 98.5% of the speed of unsloth's file of the same size, and MS2.7 at 112%.
+
+## Speed
+
+- **Generation** is at parity with unsloth's files of the same size (without MTP in the benchmark above: MS4.3 14.4 vs
+  14.7 tokens/s, MS2.7 20.8 vs 21.4).
+- **Prompt processing** on the RTX Spark (GB10), relative to unsloth's file of the same size: MS2.7 1.04x, MS3 1.00x,
+  MS4 0.94x, MS4.3 0.92x. A kernel limit on that machine; on an RTX 4080 Super it is at parity.
+
+## What is MS
+
+MS (Mad Shift) is a family of GGUF weight types (`MS_C1` ... `MS_C6`, 1 to 6 bits per weight) with its own CUDA and CPU
+(x86, ARM) kernels in this fork. The files are made with QTIP's bitshift trellis + our own calibration-aware,
+layer-by-layer conversion. The trellis code builds on **QTIP** (Tseng, Sun, Hou and De Sa, NeurIPS 2024,
+[arXiv:2406.11235](https://arxiv.org/abs/2406.11235)). This repository runs MS files; format details are in
+[docs/ms.md](docs/ms.md).
+
+## Hardware
+
+- **NVIDIA GPUs (CUDA):** supported. The Windows x64 build needs an RTX 20 series or newer card; the ARM64 build is for
+  Windows on ARM with an NVIDIA GPU (RTX Spark, DGX Spark).
+- **CPU (x86, ARM):** works, slower.
+- **Apple Metal** and other GPU backends: not yet.
+
+## Credit and citation
+
+MS (Mad Shift) was created by **Matthew Priester** ([GitHub](https://github.com/devvexus),
+[ORCID 0009-0000-0032-5292](https://orcid.org/0009-0000-0032-5292)). Please credit *MS (Mad Shift) by Matthew Priester*.
+
+- How to cite: [CITATION.cff](CITATION.cff) (GitHub's "Cite this repository"). Please cite QTIP too.
+- [NOTICE](NOTICE): the credit notice; keep it when you copy or adapt the MS code.
+- [LICENSE](LICENSE): MIT, like llama.cpp: "Copyright (c) 2023-2026 The ggml authors" and "Copyright (c) 2026 Matthew
+  Priester (MS (Mad Shift) additions)".
+
+This project is not affiliated with or endorsed by ggml-org/llama.cpp, Qwen/Alibaba, unsloth or NVIDIA.
+
+Upstreaming MS to llama.cpp is planned.
 
 ---
 
-*The original llama.cpp README follows.*
+*The original [llama.cpp](https://github.com/ggml-org/llama.cpp) README follows. Its install commands install stock
+llama.cpp, which cannot load MS files; build this repository instead (see Run it now).*
 
 # llama.cpp
 
