@@ -26,6 +26,8 @@
 Compared against Unsloth Dynamic 3 (UD3): unsloth's files at revision 4ca72078 (August 2026). Mean KL divergence over
 English wiki, web, code and math text the files were not made from; lower is better. unsloth's sizes are without the MTP
 layer built into their files. Every MS file is no larger than its unsloth file except MS4.3, which is 0.09 GB larger.
+The tensors MS does not code (input embedding table, norms, small SSM tensors) are unsloth's, copied unchanged; see the
+model card.
 Method and per-text numbers: [model card](https://huggingface.co/devvexus/Qwen3.8-27B-MS).
 
 ## Run it now
