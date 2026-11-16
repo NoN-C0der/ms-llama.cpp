@@ -67,7 +67,7 @@ page and an API run on **http://localhost:8080**. Stop with Ctrl+C; run the same
 
 `-c 32768` gives a 32k-token context; raise it if your GPU has room. Set it yourself, as with stock llama.cpp: on
 Windows the automatic sizing can overestimate a display GPU's free memory, and a model that spills into system RAM
-runs very slowly.  Any other file by name:
+runs very slowly. Any other file by name:
 `-hf devvexus/Qwen3.8-27B-MS --hf-file MS3.7/Qwen3.8-27B-MS3.7.gguf`. A .gguf you downloaded yourself:
 `-m <file>.gguf -md mtp-Qwen3.8-27B-MS.gguf --spec-type draft-mtp`.
 
