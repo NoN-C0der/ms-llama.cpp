@@ -3,8 +3,8 @@
 MS (Mad Shift) is a GGUF weight format for llama.cpp created by **Matthew Priester**
 ([GitHub](https://github.com/devvexus), [ORCID 0009-0000-0032-5292](https://orcid.org/0009-0000-0032-5292)). At the same file
 size, MS files stay much closer to the original model than standard K-/I-quants and unsloth's dynamic quants: on Qwen3.5-2B,
-4-9x lower KL divergence to the BF16 model than the next unsloth file up in size; on Qwen3.8-27B, 1.61-2.31x lower than
-unsloth's UD3 file of about the same size.
+4.5-9.4x lower KL divergence to the BF16 model than unsloth's smallest file of the same or larger size; on
+Qwen3.8-27B, 1.61-2.31x lower than unsloth's UD3 file of about the same size (revision 4ca72078, August 2026).
 
 Models: [huggingface.co/devvexus](https://huggingface.co/devvexus) ("MS Quants" collection).
 
