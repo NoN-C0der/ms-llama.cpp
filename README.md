@@ -25,7 +25,7 @@ Method and per-text numbers: [model card](https://huggingface.co/devvexus/Qwen3.
 **1. Install the engine** (Windows with an NVIDIA GPU, once). Paste into PowerShell:
 
 ```powershell
-$d="$env:LOCALAPPDATA\ms-llama"; $z=if($env:PROCESSOR_ARCHITECTURE -eq "ARM64"){"arm64-cuda"}else{"x64-cuda12"}; ni -ItemType Directory -Force $d|Out-Null; curl.exe -L -o "$d\ms.zip" "https://github.com/devvexus/ms-llama.cpp/releases/latest/download/ms-llama-win-$z.zip"; tar -xf "$d\ms.zip" -C $d
+$d="$env:LOCALAPPDATA\ms-llama"; $z=if($env:PROCESSOR_ARCHITECTURE -eq "ARM64"){"arm64-cuda"}else{"x64-cuda12"}; ni -ItemType Directory -Force $d|Out-Null; curl.exe -fL -o "$d\ms.zip" "https://github.com/devvexus/ms-llama.cpp/releases/latest/download/ms-llama-win-$z.zip"; if($?){tar -xf "$d\ms.zip" -C $d}
 ```
 
 It puts the prebuilt engine (x64 or ARM64, picked for you; CUDA and C++ runtimes included) in `%LOCALAPPDATA%\ms-llama`. It
