@@ -18,44 +18,52 @@ original BF16 model (Qwen3.8-27B).
 Compared against Unsloth Dynamic 3 (UD3): unsloth's files at revision 4ca72078 (August 2026). Mean KL divergence over
 English wiki, web, code and math text the files were not made from; lower is better. unsloth's sizes are without the MTP
 layer built into their files. Every MS file is no larger than its unsloth file except MS4.3, which is 0.09 GB larger.
-unsloth updated four of these files on 2026-11-12; against the new versions, MS3 is 1.60x and MS4 1.84x closer. Method
-and per-text numbers: [model card](https://huggingface.co/devvexus/Qwen3.8-27B-MS).
+Method and per-text numbers: [model card](https://huggingface.co/devvexus/Qwen3.8-27B-MS).
 
 ## Run it now
 
-Windows with an NVIDIA GPU: paste this one line into PowerShell.
+**1. Install the engine** (Windows with an NVIDIA GPU, once). Paste into PowerShell:
 
 ```powershell
-$d="$env:LOCALAPPDATA\ms-llama"; if(!(Test-Path "$d\llama-server.exe")){$z=if($env:PROCESSOR_ARCHITECTURE -eq "ARM64"){"arm64-cuda"}else{"x64-cuda12"}; ni -ItemType Directory -Force $d|Out-Null; curl.exe -L -o "$d\ms.zip" "https://github.com/devvexus/ms-llama.cpp/releases/latest/download/ms-llama-win-$z.zip"; tar -xf "$d\ms.zip" -C $d}; & "$d\llama-server.exe" -hf devvexus/Qwen3.8-27B-MS:MS4.3 --spec-type draft-mtp --port 8080
+$d="$env:LOCALAPPDATA\ms-llama"; $z=if($env:PROCESSOR_ARCHITECTURE -eq "ARM64"){"arm64-cuda"}else{"x64-cuda12"}; ni -ItemType Directory -Force $d|Out-Null; curl.exe -L -o "$d\ms.zip" "https://github.com/devvexus/ms-llama.cpp/releases/latest/download/ms-llama-win-$z.zip"; tar -xf "$d\ms.zip" -C $d
 ```
 
-What it does:
+It puts the prebuilt engine (x64 or ARM64, picked for you; CUDA and C++ runtimes included) in `%LOCALAPPDATA%\ms-llama`. It
+never touches an existing llama.cpp.
 
-- Installs the prebuilt engine (x64 or ARM64, picked for you; CUDA and C++ runtimes included) into
-  `%LOCALAPPDATA%\ms-llama`. It never touches an existing llama.cpp. The next run skips this step.
-- Downloads Qwen3.8-27B-MS4.3 and the MTP file from Hugging Face (into the Hugging Face cache, once).
-- Serves a chat page and an API on **http://localhost:8080**. Stop it with Ctrl+C; paste the same line to start it again.
+**2. Run the file that fits your GPU.** The first run downloads it and the 0.30 GB MTP file from Hugging Face. Then a chat
+page and an API run on **http://localhost:8080**. Stop with Ctrl+C; run the same line to start again.
 
-Pick the file for your GPU by changing only the tag after the colon:
+12-16 GB (RTX 4070 Ti Super, 4080, 5070 Ti, 5080): **MS2.7**, 10.6 GB
 
-| GPU memory | Tag |
-|---|---|
-| 32 GB or more | `MS5` |
-| 24 GB | `MS4.3` |
-| 16 GB | `MS2.7` |
-| 12 GB | `MS2.7` with a short context (the server shortens it to fit by itself, or add `-c 4096`) |
+```powershell
+& "$env:LOCALAPPDATA\ms-llama\llama-server.exe" -hf devvexus/Qwen3.8-27B-MS:MS2.7 --spec-type draft-mtp --port 8080
+```
 
-The other tiers (MS3, MS3.5, MS3.7, MS4) go by file name instead of a tag, e.g. replace
-`-hf devvexus/Qwen3.8-27B-MS:MS4.3` with `-hf devvexus/Qwen3.8-27B-MS --hf-file MS4/Qwen3.8-27B-MS4.gguf`.
+24 GB (RTX 3090, 4090): **MS4.3**, 17.3 GB
 
-**Linux and macOS:** build from source like llama.cpp, then run the same server:
+```powershell
+& "$env:LOCALAPPDATA\ms-llama\llama-server.exe" -hf devvexus/Qwen3.8-27B-MS:MS4.3 --spec-type draft-mtp --port 8080
+```
+
+32 GB or more (RTX 5090, RTX Spark, DGX Spark): **MS5**, 19.4 GB
+
+```powershell
+& "$env:LOCALAPPDATA\ms-llama\llama-server.exe" -hf devvexus/Qwen3.8-27B-MS:MS5 --spec-type draft-mtp --port 8080
+```
+
+On a 12 GB card, MS2.7 runs with a shorter context (the server fits it by itself). Any other file by name:
+`-hf devvexus/Qwen3.8-27B-MS --hf-file MS3.7/Qwen3.8-27B-MS3.7.gguf`. A .gguf you downloaded yourself:
+`-m <file>.gguf -md mtp-Qwen3.8-27B-MS.gguf --spec-type draft-mtp`.
+
+**Linux and macOS:** build from source like llama.cpp, then run the same server with the tag for your GPU:
 
 ```bash
 git clone https://github.com/devvexus/ms-llama.cpp
 cd ms-llama.cpp
 cmake -B build -DGGML_CUDA=ON -DCMAKE_BUILD_TYPE=Release   # CPU only (and macOS): drop -DGGML_CUDA=ON
 cmake --build build --config Release -j
-./build/bin/llama-server -hf devvexus/Qwen3.8-27B-MS:MS4.3 --spec-type draft-mtp --port 8080
+./build/bin/llama-server -hf devvexus/Qwen3.8-27B-MS:MS2.7 --spec-type draft-mtp --port 8080   # or :MS4.3, :MS5
 ```
 
 ## Use it in your apps
