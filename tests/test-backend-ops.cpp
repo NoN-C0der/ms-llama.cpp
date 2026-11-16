@@ -8109,19 +8109,26 @@ struct test_mul_mat_vec_fusion : public test_case {
     const bool with_lane_scale;
     std::array<int64_t, 2> batch_dims;
     const bool skip; // set some ids to a negative value (only for use_id)
+    const ggml_type type_gate; // GGML_TYPE_COUNT: the type of up (only without use_id)
 
     test_mul_mat_vec_fusion(ggml_type type, ggml_glu_op op, int64_t m, int64_t n, int64_t k,
                         bool use_id = false, int n_mats = 1, int n_used = 1, bool b = false, bool with_bias = false, bool with_gate = true,
-                        bool with_lane_scale = false, std::array<int64_t, 2> batch_dims = {4, 2}, bool skip = false)
+                        bool with_lane_scale = false, std::array<int64_t, 2> batch_dims = {4, 2}, bool skip = false,
+                        ggml_type type_gate = GGML_TYPE_COUNT)
     : type(type), glu_op(op), m(m), n(n), k(k), use_id(use_id), n_mats(n_mats), n_used(n_used), b(b), with_bias(with_bias),
-        with_gate(with_gate), with_lane_scale(with_lane_scale), batch_dims(batch_dims), skip(skip) {
+        with_gate(with_gate), with_lane_scale(with_lane_scale), batch_dims(batch_dims), skip(skip), type_gate(type_gate) {
         if (use_id) {
             GGML_ASSERT(n_used <= n_mats);
+            GGML_ASSERT(type_gate == GGML_TYPE_COUNT);
         }
     }
 
     std::string vars() override {
-        return VARS_TO_STR14(type, glu_op, m, n, k, use_id, n_mats, n_used, b, with_bias, with_gate, with_lane_scale, batch_dims, skip);
+        std::string v = VARS_TO_STR14(type, glu_op, m, n, k, use_id, n_mats, n_used, b, with_bias, with_gate, with_lane_scale, batch_dims, skip);
+        if (type_gate != GGML_TYPE_COUNT) {
+            v += ",type_gate=" + std::string(ggml_type_name(type_gate));
+        }
+        return v;
     }
 
     std::string op_desc(ggml_tensor * t) override {
@@ -8176,7 +8183,7 @@ struct test_mul_mat_vec_fusion : public test_case {
             std::array<int64_t, 4> ne0      = { k, n, channels, samples };
 
             ggml_tensor * cur  = ggml_new_tensor(ctx, GGML_TYPE_F32, 4, ne.data());
-            ggml_tensor * gate = with_gate ? ggml_new_tensor(ctx, type, 4, ne0.data()) : nullptr;
+            ggml_tensor * gate = with_gate ? ggml_new_tensor(ctx, type_gate != GGML_TYPE_COUNT ? type_gate : type, 4, ne0.data()) : nullptr;
             ggml_tensor * up   = ggml_new_tensor(ctx, type, 4, ne0.data());
 
             auto build_lane_up = [&]() {
@@ -12770,6 +12777,11 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
             true, 16, 8, b, false, true, false));
     }
 
+    // MS_C prompt matmuls with enough rows for the wide (256 row) tiles of the tensor core kernel
+    for (ggml_type type : ms_c_types) {
+        test_cases.emplace_back(new test_mul_mat(type, GGML_TYPE_F32, 8192, 300, 512, {1, 1}, {1, 1}));
+    }
+
     for (ggml_type type : ms_c_types) {
         for (bool use_id : {false, true}) {
             for (bool with_bias : {false, true}) {
@@ -12777,6 +12789,29 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
                     use_id, 16, 8, false, with_bias, true, false, {1, 1}));
             }
         }
+    }
+
+    // MS_C gate + up + GLU of prompt batches (the MS tensor core matmul fuses them): a partial row tile, and 4096 rows for the
+    // wide tiles; then gate and up of different widths (fused above 64 columns, the mat-vec does not fuse them)
+    for (ggml_type type : ms_c_types) {
+        for (ggml_glu_op glu_op : {GGML_GLU_OP_SWIGLU, GGML_GLU_OP_GEGLU}) {
+            for (int64_t m_batch : {65, 128, 300}) {
+                test_cases.emplace_back(new test_mul_mat_vec_fusion(type, glu_op, m_batch, 160, 1024,
+                    false, 16, 8, false, false, true, false, {1, 1}));
+            }
+        }
+        test_cases.emplace_back(new test_mul_mat_vec_fusion(type, GGML_GLU_OP_SWIGLU, 300, 4096, 512,
+            false, 16, 8, false, false, true, false, {1, 1}));
+    }
+    for (const auto & [type_up, type_gate] : std::vector<std::pair<ggml_type, ggml_type>>{
+            {GGML_TYPE_MS_C6, GGML_TYPE_MS_C5}, {GGML_TYPE_MS_C3, GGML_TYPE_MS_C4}, {GGML_TYPE_MS_C5, GGML_TYPE_MS_C3},
+            {GGML_TYPE_MS_C1, GGML_TYPE_MS_C2}, {GGML_TYPE_MS_C4, GGML_TYPE_MS_C6}}) {
+        for (int64_t m_batch : {1, 4, 128, 300}) {
+            test_cases.emplace_back(new test_mul_mat_vec_fusion(type_up, GGML_GLU_OP_SWIGLU, m_batch, 160, 1024,
+                false, 16, 8, false, false, true, false, {1, 1}, false, type_gate));
+        }
+        test_cases.emplace_back(new test_mul_mat_vec_fusion(type_up, GGML_GLU_OP_SWIGLU, 300, 4096, 512,
+            false, 16, 8, false, false, true, false, {1, 1}, false, type_gate));
     }
 
     // Gate and up on the SYCL XMX kernels: rows long enough for 2D block loads, a last tile of 8 rows, and
