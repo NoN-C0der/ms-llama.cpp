@@ -156,7 +156,8 @@ Generation is about the same as unsloth (98-100% on the RTX Spark, 97% on the RT
 MTP (20 prompts x 256 tokens, greedy). Prompt processing: `llama-bench -p 512`, median of 3 alternating rounds; on the
 RTX Spark MS4 and MS4.3 are a little slower because of a kernel limit on that machine; on the RTX 4080 SUPER, 0.88x
 with the default settings (f16 sums on GeForce). Quality numbers use f32 sums; GeForce cards default to f16 sums,
-which read prompts faster and measured within 0.2% KLD (Qwen3.5-2B MS4, wiki text, earlier build).
+which read prompts faster and measured the same mean KLD (Qwen3.5-2B MS4, wiki text: 0.003233 with either; top-1
+97.25% vs 97.26%).
 
 ## What is MS
 
