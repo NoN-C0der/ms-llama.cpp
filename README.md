@@ -71,6 +71,15 @@ runs very slowly. Any other file by name:
 `-hf devvexus/Qwen3.8-27B-MS --hf-file MS3.7/Qwen3.8-27B-MS3.7.gguf`. A .gguf you downloaded yourself:
 `-m <file>.gguf -md mtp-Qwen3.8-27B-MS.gguf --spec-type draft-mtp`.
 
+**Images (optional).** The vision encoder, `vision/mmproj-Qwen3.8-27B-F16.gguf` (0.93 GB, F16), lets the model read
+images. `-hf` does not load it by itself: add `--mmproj-url` with its address, or `--mmproj <file>` for a downloaded
+copy. It works with every MS file and with MTP, and adds about 1.1-1.4 GiB of GPU memory when on (nothing when off).
+The vision encoder is not MS-encoded and was not part of our evaluation; MS-encoding it is future work. For example:
+
+```powershell
+& "$env:LOCALAPPDATA\ms-llama\llama-server.exe" -hf devvexus/Qwen3.8-27B-MS:MS2.7 --spec-type draft-mtp -c 32768 --port 8080 --mmproj-url https://huggingface.co/devvexus/Qwen3.8-27B-MS/resolve/main/vision/mmproj-Qwen3.8-27B-F16.gguf
+```
+
 **Linux and macOS:** build from source like llama.cpp, then run the same server with the tag for your GPU:
 
 ```bash
