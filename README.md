@@ -1,7 +1,8 @@
-# Same size as unsloth. Half the quality loss.
+# Same size as unsloth. 1.6-2.3x lower quality loss.
 
-**MS (Mad Shift)** quants have **1.61-2.31x lower quality loss** than unsloth's files of about the same size: **1.61-1.63x**
-at the low tiers, **1.90-2.31x** from MS3.7 up. Quality loss = KL divergence from the original BF16 model (Qwen3.8-27B).
+**MS (Mad Shift)** quants have **1.61-2.31x lower quality loss** than unsloth's UD3 files of about the same size:
+**1.61-1.63x** at the low tiers (MS2.7, MS3, MS3.5), **1.90-2.31x** from MS3.7 up. Quality loss = KL divergence from the
+original BF16 model (Qwen3.8-27B).
 **ms-llama.cpp** is the llama.cpp fork that runs them.
 
 | MS file | Size | KL divergence | unsloth UD3 file | its size | its KL divergence | MS is |
@@ -89,17 +90,20 @@ RTX Spark (GB10), 20 chat prompts x 256 tokens, greedy, tokens per second:
 |---|---|---|---|---|
 | **MS4.3** + our 0.30 GB MTP file | 14.4 | **31.6** | **2.20x** | ~0.9 GB |
 | **MS2.7** + our 0.30 GB MTP file | 20.8 | **43.7** | **2.10x** | ~0.9 GB |
-| unsloth UD-Q4_K_XL + their 1.37 GB MTP file | 14.7 | 32.1 | 2.18x | ~1.7 GB |
+| unsloth UD-Q4_K_XL (current UD3.1 file) + their 1.37 GB MTP file | 14.7 | 32.1 | 2.18x | ~1.7 GB |
 | unsloth UD-IQ3_XXS + their 1.37 GB MTP file | 21.4 | 38.9 | 1.82x | ~1.7 GB |
 
 With MTP on, MS4.3 runs at 98% of the speed of unsloth's file of the same size with its MTP file, and MS2.7 at 112%.
 
 ## Speed
 
-- **Generation** is at parity with unsloth's files of the same size (without MTP in the benchmark above: MS4.3 14.4 vs
-  14.7 tokens/s, MS2.7 20.8 vs 21.4).
+- **Generation:** about the same as unsloth (98%). Without MTP in the chat benchmark above, on the same engine: MS4.3
+  14.40 vs 14.72 tokens/s, MS2.7 20.80 vs 21.36.
 - **Prompt processing** on the RTX Spark (GB10), relative to unsloth's file of the same size: MS2.7 1.04x, MS3 1.00x,
   MS4 0.94x, MS4.3 0.92x, a kernel limit on that machine.
+
+The MS4.3 speed comparisons (MTP, generation, prompt processing) use unsloth's current UD-Q4_K_XL (the UD3.1 file,
+revision ce331efc), since the August file was not available for those runs.
 
 ## What is MS
 
