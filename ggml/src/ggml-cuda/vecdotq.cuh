@@ -1583,14 +1583,10 @@ static __device__ __forceinline__ void vec_dot_ms_c_y16_cols(
         int sumh = 0; // sum of (v >> 2)*y
         int suml = 0; // sum of 64*(v & 3)*y
 #pragma unroll
-        for (int i4 = 0; i4 < QK8_1/8; ++i4) {
-            const int4 q4 = ((const int4 *) by->qs)[i4];
-            const int  q[4] = {q4.x, q4.y, q4.z, q4.w};
-#pragma unroll
-            for (int j = 0; j < 4; ++j) {
-                sumh = ms_c_dp2a_lo_s8(q[j], p[4*i4 + j], sumh);
-                suml = ms_c_dp2a_hi_u8(q[j], p[4*i4 + j], suml);
-            }
+        for (int i = 0; i < QK8_1/2; ++i) {
+            const int q = get_int_b4(by->qs, i);
+            sumh = ms_c_dp2a_lo_s8(q, p[i], sumh);
+            suml = ms_c_dp2a_hi_u8(q, p[i], suml);
         }
         const int sumi = 4*sumh + (suml >> 6);
         out[c] = __half2float(bq->d) * by->d * sumi;
@@ -1641,12 +1637,8 @@ static __device__ __forceinline__ float vec_dot_ms_c_y16(
 
     int q[QK8_1/2];
 #pragma unroll
-    for (int i4 = 0; i4 < QK8_1/8; ++i4) {
-        const int4 q4 = ((const int4 *) by->qs)[i4];
-        q[4*i4 + 0] = q4.x;
-        q[4*i4 + 1] = q4.y;
-        q[4*i4 + 2] = q4.z;
-        q[4*i4 + 3] = q4.w;
+    for (int i = 0; i < QK8_1/2; ++i) {
+        q[i] = get_int_b4(by->qs, i);
     }
 
     int sumi = 0;

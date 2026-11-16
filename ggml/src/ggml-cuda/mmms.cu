@@ -491,19 +491,28 @@ static __device__ __forceinline__ void mul_mat_ms_c_body(
 
             [[maybe_unused]] uint32_t hacc[ntn][2];
 
-            // the weights of step s + 1 are decoded before the mma of step s are issued
+            // 16 warps: the weights of step s + 1 are decoded before the mma of step s are issued
+            constexpr bool pipe = nwarps == 16;
             uint32_t an[4];
-            mmms_decode_step<k, 0>(wna, dca, an[0], an[2]);
-            mmms_decode_step<k, 0>(wnb, dcb, an[1], an[3]);
+            if constexpr (pipe) {
+                mmms_decode_step<k, 0>(wna, dca, an[0], an[2]);
+                mmms_decode_step<k, 0>(wnb, dcb, an[1], an[3]);
+            }
             static_for<0, MMMS_BK/16>([&](auto s_) {
                 constexpr int s = decltype(s_)::value;
-                const uint32_t a0 = an[0];
-                const uint32_t a1 = an[1];
-                const uint32_t a2 = an[2];
-                const uint32_t a3 = an[3];
-                if constexpr (s + 1 < MMMS_BK/16) {
-                    mmms_decode_step<k, s + 1>(wna, dca, an[0], an[2]);
-                    mmms_decode_step<k, s + 1>(wnb, dcb, an[1], an[3]);
+                uint32_t a0, a1, a2, a3;
+                if constexpr (pipe) {
+                    a0 = an[0];
+                    a1 = an[1];
+                    a2 = an[2];
+                    a3 = an[3];
+                    if constexpr (s + 1 < MMMS_BK/16) {
+                        mmms_decode_step<k, s + 1>(wna, dca, an[0], an[2]);
+                        mmms_decode_step<k, s + 1>(wnb, dcb, an[1], an[3]);
+                    }
+                } else {
+                    mmms_decode_step<k, s>(wna, dca, a0, a2);
+                    mmms_decode_step<k, s>(wnb, dcb, a1, a3);
                 }
 
 #pragma unroll
@@ -1113,17 +1122,22 @@ static void mul_mat_ms_c_launch(ggml_backend_cuda_context & ctx, mmms_args a, co
     mul_mat_ms_c_fixup<nwarps, bn><<<a.ntiles, block, 0, stream>>>(a);
 }
 
-// gate/up fusion: the 128 column tile of 16 warps, 128 rows of the gate and of the up weights per tile
-#define MMMS_GLU_NWARPS 16
-#define MMMS_GLU_BN     128
+// gate/up fusion: the 128 column tile, nwarps/2 warps on the gate rows and as many on the same rows of the up weights
+#define MMMS_GLU_BN 128
 
+// nwarps 16: 128 output rows per tile, 8: 64 (the tile choice is in ggml_cuda_mul_mat_ms_impl)
 template <int k, int k_up>
-static void mul_mat_ms_c_glu(ggml_backend_cuda_context & ctx, const bool acc_f16, mmms_args a) {
-    a.ntiles_m = (a.ne01 + 8*MMMS_GLU_NWARPS - 1)/(8*MMMS_GLU_NWARPS);
+static void mul_mat_ms_c_glu(ggml_backend_cuda_context & ctx, const int nwarps, const bool acc_f16, mmms_args a) {
+    a.ntiles_m = (a.ne01 + 8*nwarps - 1)/(8*nwarps);
     a.ntiles_n = a.ne11_pad/MMMS_GLU_BN;
     a.ntiles   = a.ntiles_m*a.ntiles_n*a.ne12*a.ne13;
-    if (acc_f16) { mul_mat_ms_c_launch<k, MMMS_GLU_NWARPS, MMMS_GLU_BN, true,  true, k_up>(ctx, a, false); }
-    else         { mul_mat_ms_c_launch<k, MMMS_GLU_NWARPS, MMMS_GLU_BN, false, true, k_up>(ctx, a, false); }
+    if (nwarps == 16) {
+        if (acc_f16) { mul_mat_ms_c_launch<k, 16, MMMS_GLU_BN, true,  true, k_up>(ctx, a, false); }
+        else         { mul_mat_ms_c_launch<k, 16, MMMS_GLU_BN, false, true, k_up>(ctx, a, false); }
+    } else {
+        if (acc_f16) { mul_mat_ms_c_launch<k,  8, MMMS_GLU_BN, true,  true, k_up>(ctx, a, false); }
+        else         { mul_mat_ms_c_launch<k,  8, MMMS_GLU_BN, false, true, k_up>(ctx, a, false); }
+    }
 }
 
 // gate/up types of a fused pair: up to MMMS_GLU_MAX_DK bits apart
@@ -1142,8 +1156,14 @@ static int mmms_type_bits(const ggml_type type) {
 }
 
 template <int k>
-static void mul_mat_ms_c_glu_switch(ggml_backend_cuda_context & ctx, const bool acc_f16, const int k_up, const mmms_args & a) {
-#define MMMS_GLU_CASE(ku_)                                                                if constexpr (ku_ >= k - MMMS_GLU_MAX_DK && ku_ <= k + MMMS_GLU_MAX_DK) {                 if (k_up == ku_) {                                                                        mul_mat_ms_c_glu<k, ku_>(ctx, acc_f16, a);                                            return;                                                                           }                                                                                 }
+static void mul_mat_ms_c_glu_switch(ggml_backend_cuda_context & ctx, const int nwarps, const bool acc_f16, const int k_up, const mmms_args & a) {
+#define MMMS_GLU_CASE(ku_) \
+    if constexpr (ku_ >= k - MMMS_GLU_MAX_DK && ku_ <= k + MMMS_GLU_MAX_DK) { \
+        if (k_up == ku_) { \
+            mul_mat_ms_c_glu<k, ku_>(ctx, nwarps, acc_f16, a); \
+            return; \
+        } \
+    }
     MMMS_GLU_CASE(1) MMMS_GLU_CASE(2) MMMS_GLU_CASE(3) MMMS_GLU_CASE(4) MMMS_GLU_CASE(5) MMMS_GLU_CASE(6)
 #undef MMMS_GLU_CASE
     GGML_ABORT("fatal error");
@@ -1161,7 +1181,7 @@ static void mul_mat_ms_c_switch(ggml_backend_cuda_context & ctx, const int nwarp
         else         { mul_mat_ms_c_launch<k, nw_, bn_, false>(ctx, a, stream_k); }           \
         return;                                                                               \
     }
-    MMMS_CASE(16, 128) MMMS_CASE(8, 64) MMMS_CASE(4, 32) MMMS_CASE(4, 16)
+    MMMS_CASE(16, 128) MMMS_CASE(8, 128) MMMS_CASE(8, 64) MMMS_CASE(4, 32) MMMS_CASE(4, 16)
 #undef MMMS_CASE
     GGML_ABORT("fatal error");
 }
@@ -1208,13 +1228,24 @@ static void ggml_cuda_mul_mat_ms_impl(ggml_backend_cuda_context & ctx, const ggm
     cudaStream_t stream = ctx.stream();
 
     // n tile: the smallest that holds the batch (small batches waste less of the mma on padding columns)
-    // the 128 column tile with 256 rows: each y tile serves twice the weights (less L2 traffic, the GB10 is power bound here)
     const int bn     = ne11 <= 16 ? 16 : ne11 <= 32 ? 32 : ne11 <= 64 ? 64 : 128;
-    const int nwarps = bn <= 32 ? 4 : bn == 128 ? 16 : 8;
     GGML_ASSERT(src0_up == nullptr || bn == MMMS_GLU_BN);
 
-    const int  id       = ggml_cuda_get_device();
-    const bool acc_f16  = mmms_use_f16_sums(id);
+    const int  id      = ggml_cuda_get_device();
+    const bool acc_f16 = mmms_use_f16_sums(id);
+
+    // the 128 column tile: 16 warps (256 rows, or 128 gate + 128 up rows) halve the y traffic per weight, which pays where
+    // the f32 sums run at the full rate (the f16 sums need 96 accumulator registers, more than the 128 per thread of a
+    // 512 thread block leave room for) and the tiles still fill the GPU (one block per SM); else 8 warps.
+    // GGML_CUDA_MMMS_ROWS=128|256 forces the rows of the plain tile (with glu: 64|128 output rows).
+    int nwarps = bn <= 32 ? 4 : 8;
+    if (bn == 128) {
+        static const int rows_env = getenv("GGML_CUDA_MMMS_ROWS") ? atoi(getenv("GGML_CUDA_MMMS_ROWS")) : 0;
+        const int64_t ntiles16 = (ne01 + (src0_up ? 127 : 255))/(src0_up ? 128 : 256) * ((ne11 + 127)/128) * ne12*ne13;
+        const bool    wide     = rows_env ? rows_env == 256 : !acc_f16 && ntiles16 >= ggml_cuda_info().devices[id].nsm;
+        nwarps = wide ? 16 : 8;
+    }
+
     const bool stream_k = true;
 
     const int ne11_pad = GGML_PAD(ne11, bn);
@@ -1273,12 +1304,12 @@ static void ggml_cuda_mul_mat_ms_impl(ggml_backend_cuda_context & ctx, const ggm
     if (src0_up) {
         const int k_up = mmms_type_bits(src0_up->type);
         switch (src0->type) {
-            case GGML_TYPE_MS_C1: mul_mat_ms_c_glu_switch<1>(ctx, acc_f16, k_up, a); break;
-            case GGML_TYPE_MS_C2: mul_mat_ms_c_glu_switch<2>(ctx, acc_f16, k_up, a); break;
-            case GGML_TYPE_MS_C3: mul_mat_ms_c_glu_switch<3>(ctx, acc_f16, k_up, a); break;
-            case GGML_TYPE_MS_C4: mul_mat_ms_c_glu_switch<4>(ctx, acc_f16, k_up, a); break;
-            case GGML_TYPE_MS_C5: mul_mat_ms_c_glu_switch<5>(ctx, acc_f16, k_up, a); break;
-            case GGML_TYPE_MS_C6: mul_mat_ms_c_glu_switch<6>(ctx, acc_f16, k_up, a); break;
+            case GGML_TYPE_MS_C1: mul_mat_ms_c_glu_switch<1>(ctx, nwarps, acc_f16, k_up, a); break;
+            case GGML_TYPE_MS_C2: mul_mat_ms_c_glu_switch<2>(ctx, nwarps, acc_f16, k_up, a); break;
+            case GGML_TYPE_MS_C3: mul_mat_ms_c_glu_switch<3>(ctx, nwarps, acc_f16, k_up, a); break;
+            case GGML_TYPE_MS_C4: mul_mat_ms_c_glu_switch<4>(ctx, nwarps, acc_f16, k_up, a); break;
+            case GGML_TYPE_MS_C5: mul_mat_ms_c_glu_switch<5>(ctx, nwarps, acc_f16, k_up, a); break;
+            case GGML_TYPE_MS_C6: mul_mat_ms_c_glu_switch<6>(ctx, nwarps, acc_f16, k_up, a); break;
             default:
                 GGML_ABORT("fatal error");
         }

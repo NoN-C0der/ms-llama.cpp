@@ -1614,7 +1614,7 @@ struct ggml_backend_cuda_context {
     const ggml_tensor * q8_1_cache_src = nullptr;
     std::unique_ptr<ggml_cuda_pool_alloc<char>> q8_1_cache;
 
-    // f16 y of mmms_y_src for the MS_C small-batch matmuls (mmms.cu) that read the tensor later in the same graph evaluation,
+    // f16 y of mmms_y_src for the MS_C tensor core matmuls (mmms.cu) that read the tensor later in the same graph evaluation,
     // allocated after q8_1_cache and freed before it
     const ggml_tensor * mmms_y_src = nullptr;
     std::unique_ptr<ggml_cuda_pool_alloc<char>> mmms_y;
@@ -1654,15 +1654,12 @@ struct ggml_cuda_mm_fusion_args_device {
     int64_t y_res = 0; // MS_C: the block_y16 data of y starts y_res q8_1 blocks after y
 };
 
-// 16 bit activations of the MS_C mat-vec: 32 values with a float scale.
-// 80 bytes, so that the values of each block are 16 byte aligned (vector loads): the block_y16 data starts at a multiple of
-// 4 q8_1 blocks (the rows of y are padded to MATRIX_ROW_PADDING).
+// 16 bit activations of the MS_C mat-vec: 32 values with a float scale
 struct block_y16 {
-    int16_t qs[QK8_1];
     float   d;
-    float   pad[3];
+    int16_t qs[QK8_1];
 };
-static_assert(sizeof(block_y16) == 5*16, "wrong block_y16 size");
+static_assert(sizeof(block_y16) == sizeof(float) + QK8_1*sizeof(int16_t), "wrong block_y16 size");
 
 struct ggml_cuda_kernel_launch_params {
     dim3 block_nums;
