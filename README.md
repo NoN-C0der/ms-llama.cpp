@@ -97,8 +97,9 @@ With the server running:
 - **Claude Code:** set `ANTHROPIC_BASE_URL=http://localhost:8080` and `ANTHROPIC_AUTH_TOKEN` to any value, then start
   `claude`. The server speaks Anthropic's Messages API (`/v1/messages`).
   PowerShell: `$env:ANTHROPIC_BASE_URL="http://localhost:8080"; $env:ANTHROPIC_AUTH_TOKEN="local"; claude`
-  Claude Code's own prompt is about 24k tokens, so give the server more context for it: `-c 49152` instead of `-c 32768`
-  (with `-np 1` this fits a 16 GB card whose GPU isn't busy with other apps).
+  Claude Code's own prompt is large (about 24k tokens in our test with Claude Code 2.1.325), so give the
+  server more context for it: `-c 49152` instead of `-c 32768` (with `-np 1`, MS2.7 still fits a 16 GB card whose
+  GPU isn't busy with other apps).
 - **OpenAI-compatible apps:** base URL `http://localhost:8080/v1`, any API key.
 - **Apps that run llama.cpp themselves** (they ask for a llama.cpp folder or a `llama-server` path): point them at
   `%LOCALAPPDATA%\ms-llama`.
