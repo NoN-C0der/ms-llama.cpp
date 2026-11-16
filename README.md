@@ -149,10 +149,10 @@ kernel limit on that machine.
 ## What is MS
 
 MS (Mad Shift) is a family of GGUF weight types (`MS_C1` ... `MS_C6`, 1 to 6 bits per weight) with its own CUDA and CPU
-(x86, ARM) kernels in this fork. The files are made with QTIP's bitshift trellis + our own calibration-aware,
-layer-by-layer conversion. MS's trellis code uses **QTIP**'s bitshift trellis and 1MAD decoder (Tseng, Sun, Hou and De Sa, NeurIPS
+(x86, ARM) kernels in this fork. The files are made with the bitshift-trellis construction described in QTIP + our own
+calibration-aware, layer-by-layer conversion. MS uses the bitshift-trellis construction and the 1MAD decoding function described in **QTIP** (Tseng, Sun, Hou and De Sa, NeurIPS
 2024, [arXiv:2406.11235](https://arxiv.org/abs/2406.11235)). To our knowledge, MS (Mad Shift) is the first GGUF format built on
-QTIP's bitshift trellis code. This repository runs MS files; format details are in
+the bitshift-trellis construction described in QTIP. This repository runs MS files; format details are in
 [docs/ms.md](docs/ms.md).
 
 ## Hardware
