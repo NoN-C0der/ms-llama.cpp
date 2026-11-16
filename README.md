@@ -94,7 +94,8 @@ RTX Spark (GB10), 20 chat prompts x 256 tokens, greedy, tokens per second:
 | unsloth UD-IQ3_XXS + their 1.37 GB MTP file | 21.4 | 38.9 | 1.82x | ~1.7 GB |
 
 With MTP on, MS4.3 runs at 98% of the speed of unsloth's UD3.1 UD-Q4_K_XL with its MTP file, and MS2.7 at 112% of
-UD-IQ3_XXS's.
+UD-IQ3_XXS's. Extra GPU memory is nvidia-smi with MTP on minus off, measured for exactly these pairings; unsloth's MTP file
+loaded with MS4.3 instead adds ~1.3 GB (see the model card).
 
 ## Speed
 
