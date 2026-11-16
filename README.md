@@ -72,7 +72,7 @@ With the server running:
 ## Models
 
 - [devvexus/Qwen3.8-27B-MS](https://huggingface.co/devvexus/Qwen3.8-27B-MS): 7 tiers, MS2.7 (10.6 GB) to MS5 (19.4 GB),
-  plus one MTP file, `mtp-Qwen3.8-27B-MS.gguf` (0.30 GB).
+  plus one MTP file, `mtp-Qwen3.8-27B-MS.gguf` (0.30 GB, in the top folder).
 - [devvexus/Qwen3.5-2B-MS](https://huggingface.co/devvexus/Qwen3.5-2B-MS).
 
 These repositories are private until launch.
@@ -91,21 +91,22 @@ RTX Spark (GB10), 20 chat prompts x 256 tokens, greedy, tokens per second:
 | unsloth UD-Q4_K_XL + their 1.37 GB MTP file | 14.7 | 32.1 | 2.18x | ~1.7 GB |
 | unsloth UD-IQ3_XXS + their 1.37 GB MTP file | 21.4 | 38.9 | 1.82x | ~1.7 GB |
 
-With MTP on, MS4.3 runs at 98.5% of the speed of unsloth's file of the same size with its MTP file, and MS2.7 at 112%.
+With MTP on, MS4.3 runs at 98% of the speed of unsloth's file of the same size with its MTP file, and MS2.7 at 112%.
 
 ## Speed
 
 - **Generation** is at parity with unsloth's files of the same size (without MTP in the benchmark above: MS4.3 14.4 vs
   14.7 tokens/s, MS2.7 20.8 vs 21.4).
 - **Prompt processing** on the RTX Spark (GB10), relative to unsloth's file of the same size: MS2.7 1.04x, MS3 1.00x,
-  MS4 0.94x, MS4.3 0.92x. A kernel limit on that machine; on an RTX 4080 Super it is at parity.
+  MS4 0.94x, MS4.3 0.92x, a kernel limit on that machine.
 
 ## What is MS
 
 MS (Mad Shift) is a family of GGUF weight types (`MS_C1` ... `MS_C6`, 1 to 6 bits per weight) with its own CUDA and CPU
 (x86, ARM) kernels in this fork. The files are made with QTIP's bitshift trellis + our own calibration-aware,
 layer-by-layer conversion. The trellis code builds on **QTIP** (Tseng, Sun, Hou and De Sa, NeurIPS 2024,
-[arXiv:2406.11235](https://arxiv.org/abs/2406.11235)). This repository runs MS files; format details are in
+[arXiv:2406.11235](https://arxiv.org/abs/2406.11235)). To our knowledge, MS (Mad Shift) is the first GGUF format built on
+QTIP's bitshift trellis code. This repository runs MS files; format details are in
 [docs/ms.md](docs/ms.md).
 
 ## Hardware
@@ -125,9 +126,10 @@ MS (Mad Shift) was created by **Matthew Priester** ([GitHub](https://github.com/
 - [LICENSE](LICENSE): MIT, like llama.cpp: "Copyright (c) 2023-2026 The ggml authors" and "Copyright (c) 2026 Matthew
   Priester (MS (Mad Shift) additions)".
 
-This project is not affiliated with or endorsed by ggml-org/llama.cpp, Qwen/Alibaba, unsloth or NVIDIA.
+This project is not affiliated with or endorsed by ggml-org/llama.cpp, Qwen/Alibaba, unsloth or NVIDIA. Other product
+names (Claude Code, Ollama, LM Studio and others) are trademarks of their owners, named only to describe compatibility.
 
-Upstreaming MS to llama.cpp is planned.
+We plan to propose MS for upstream llama.cpp.
 
 ---
 
