@@ -355,9 +355,11 @@ json server_chat_convert_anthropic_to_oai(const json & body) {
 
     // Convert system prompt
     json oai_messages = json::array();
+    std::string system_content;
+    bool has_system = false;
     auto system_param = json_value(body, "system", json());
     if (!system_param.is_null()) {
-        std::string system_content;
+        has_system = true;
 
         if (system_param.is_string()) {
             system_content = system_param.get<std::string>();
@@ -371,11 +373,6 @@ json server_chat_convert_anthropic_to_oai(const json & body) {
                 }
             }
         }
-
-        oai_messages.push_back({
-            {"role", "system"},
-            {"content", system_content}
-        });
     }
 
     // Convert messages
@@ -383,9 +380,47 @@ json server_chat_convert_anthropic_to_oai(const json & body) {
         throw std::runtime_error("'messages' is required");
     }
     const json & messages = body.at("messages");
+
+    // many chat templates accept only one system message, at the start:
+    // fold system messages found in the messages array into it, in order
+    if (messages.is_array()) {
+        for (const auto & msg : messages) {
+            if (json_value(msg, "role", std::string()) != "system") {
+                continue;
+            }
+            std::string text;
+            const json content = json_value(msg, "content", json());
+            if (content.is_string()) {
+                text = content.get<std::string>();
+            } else if (content.is_array()) {
+                for (const auto & block : content) {
+                    if (json_value(block, "type", std::string()) == "text") {
+                        text += json_value(block, "text", std::string());
+                    }
+                }
+            }
+            if (!system_content.empty() && !text.empty()) {
+                system_content += "\n\n";
+            }
+            system_content += text;
+            has_system = true;
+        }
+    }
+
+    if (has_system) {
+        oai_messages.push_back({
+            {"role", "system"},
+            {"content", system_content}
+        });
+    }
+
     if (messages.is_array()) {
         for (const auto & msg : messages) {
             std::string role = json_value(msg, "role", std::string());
+
+            if (role == "system") {
+                continue; // folded into the leading system message above
+            }
 
             if (!msg.contains("content")) {
                 if (role == "assistant") {
