@@ -88,24 +88,24 @@ RTX Spark (GB10), 20 chat prompts x 256 tokens, greedy, tokens per second:
 
 | Model | without MTP | with MTP | speedup | extra GPU memory for MTP |
 |---|---|---|---|---|
-| **MS4.3** + our 0.30 GB MTP file | 14.4 | **31.6** | **2.20x** | ~0.9 GB |
-| **MS2.7** + our 0.30 GB MTP file | 20.8 | **43.7** | **2.10x** | ~0.9 GB |
-| unsloth UD-Q4_K_XL (UD3.1, revision ce331efc) + their 1.37 GB MTP file | 14.7 | 32.1 | 2.18x | ~1.7 GB |
-| unsloth UD-IQ3_XXS + their 1.37 GB MTP file | 21.4 | 38.9 | 1.82x | ~1.7 GB |
+| **MS4.3** + our 0.30 GB MTP file | 14.4 | **31.6** | **2.20x** | ~0.9 GiB |
+| **MS2.7** + our 0.30 GB MTP file | 20.8 | **43.7** | **2.10x** | ~0.9 GiB |
+| unsloth UD-Q4_K_XL (UD3.1, revision ce331efc) + their 1.37 GB MTP file | 14.7 | 32.1 | 2.18x | ~1.7 GiB |
+| unsloth UD-IQ3_XXS + their 1.37 GB MTP file | 21.4 | 38.9 | 1.82x | ~1.7 GiB |
 
 With MTP on, MS4.3 runs at 98% of the speed of unsloth's UD3.1 UD-Q4_K_XL with its MTP file, and MS2.7 at 112% of
-UD-IQ3_XXS's. Extra GPU memory is nvidia-smi with MTP on minus off, measured for exactly these pairings; unsloth's MTP file
-loaded with MS4.3 instead adds ~1.3 GB (see the model card).
+UD-IQ3_XXS's. Extra GPU memory is nvidia-smi with MTP on minus off (GiB = 1024 MiB), measured for exactly these pairings; unsloth's MTP file
+loaded with MS4.3 instead adds ~1.3 GiB (see the model card).
 
 ## Speed
 
 - **Generation:** about the same as unsloth (97-98%). Without MTP in the chat benchmark above, on the same engine: MS4.3
   14.40 vs 14.72 tokens/s, MS2.7 20.80 vs 21.36.
-- **Prompt processing** on the RTX Spark (GB10), relative to unsloth's file of the same size: MS2.7 1.04x, MS3 1.00x,
+- **Prompt processing** on the RTX Spark (GB10), relative to unsloth's file of the same size: MS2.7 1.03x, MS3 1.00x,
   MS4 0.94x, MS4.3 0.92x against UD-Q4_K_XL (UD3.1, revision ce331efc); a kernel limit on that machine.
 
 The MS4.3 speed comparisons (MTP, generation, prompt processing) use unsloth's current UD-Q4_K_XL (the UD3.1 file,
-revision ce331efc), since the August file was not available for those runs.
+revision ce331efc), the file MS4.3 was sized to.
 
 ## What is MS
 
