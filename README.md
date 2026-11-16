@@ -43,8 +43,8 @@ Pick the file for your GPU by changing only the tag after the colon:
 | 16 GB | `MS2.7` |
 | 12 GB | `MS2.7` with a short context (the server shortens it to fit by itself, or add `-c 4096`) |
 
-`MS3.5` and `MS3.7` work as tags too. For MS3 and MS4 name the file instead, since the tag `MS4` also matches MS4.3:
-`-hf devvexus/Qwen3.8-27B-MS --hf-file MS4/Qwen3.8-27B-MS4.gguf`.
+The other tiers (MS3, MS3.5, MS3.7, MS4) go by file name instead of a tag, e.g. replace
+`-hf devvexus/Qwen3.8-27B-MS:MS4.3` with `-hf devvexus/Qwen3.8-27B-MS --hf-file MS4/Qwen3.8-27B-MS4.gguf`.
 
 **Linux and macOS:** build from source like llama.cpp, then run the same server:
 
@@ -72,7 +72,7 @@ With the server running:
 ## Models
 
 - [devvexus/Qwen3.8-27B-MS](https://huggingface.co/devvexus/Qwen3.8-27B-MS): 7 tiers, MS2.7 (10.6 GB) to MS5 (19.4 GB),
-  plus one MTP file, `MTP/mtp-Qwen3.8-27B-MS.gguf` (0.30 GB).
+  plus one MTP file, `mtp-Qwen3.8-27B-MS.gguf` (0.30 GB).
 - [devvexus/Qwen3.5-2B-MS](https://huggingface.co/devvexus/Qwen3.5-2B-MS).
 
 These repositories are private until launch.
@@ -91,7 +91,7 @@ RTX Spark (GB10), 20 chat prompts x 256 tokens, greedy, tokens per second:
 | unsloth UD-Q4_K_XL + their 1.37 GB MTP file | 14.7 | 32.1 | 2.18x | ~1.7 GB |
 | unsloth UD-IQ3_XXS + their 1.37 GB MTP file | 21.4 | 38.9 | 1.82x | ~1.7 GB |
 
-With MTP, MS4.3 runs at 98.5% of the speed of unsloth's file of the same size, and MS2.7 at 112%.
+With MTP on, MS4.3 runs at 98.5% of the speed of unsloth's file of the same size with its MTP file, and MS2.7 at 112%.
 
 ## Speed
 
