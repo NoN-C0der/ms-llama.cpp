@@ -7,13 +7,13 @@ original BF16 model (Qwen3.8-27B).
 
 | MS file | Size | KL divergence | unsloth UD3 file | its size | its KL divergence | MS is |
 |---|---|---|---|---|---|---|
-| MS5 | 19.41 GB | 0.00153 | UD-Q5_K_M | 19.42 GB | 0.00354 | **2.31x** closer |
-| MS4.3 | 17.30 GB | 0.00298 | UD-Q4_K_XL | 17.21 GB | 0.00646 | **2.16x** closer |
-| MS4 | 16.11 GB | 0.00442 | UD-Q4_K_M | 16.11 GB | 0.00899 | **2.04x** closer |
-| MS3.7 | 15.00 GB | 0.00623 | UD-Q4_K_S | 15.01 GB | 0.01182 | **1.90x** closer |
-| MS3.5 | 13.89 GB | 0.01000 | UD-IQ4_XS | 13.90 GB | 0.01614 | **1.61x** closer |
-| MS3 | 12.79 GB | 0.01570 | UD-Q3_K_XL | 12.80 GB | 0.02554 | **1.63x** closer |
-| MS2.7 | 10.58 GB | 0.03406 | UD-IQ3_XXS | 10.58 GB | 0.05502 | **1.62x** closer |
+| MS5 | 19.41 GB | 0.001531 | UD-Q5_K_M | 19.42 GB | 0.003539 | **2.31x** closer |
+| MS4.3 | 17.30 GB | 0.002984 | UD-Q4_K_XL | 17.21 GB | 0.006457 | **2.16x** closer |
+| MS4 | 16.11 GB | 0.004417 | UD-Q4_K_M | 16.11 GB | 0.008994 | **2.04x** closer |
+| MS3.7 | 15.00 GB | 0.006226 | UD-Q4_K_S | 15.01 GB | 0.011821 | **1.90x** closer |
+| MS3.5 | 13.89 GB | 0.010001 | UD-IQ4_XS | 13.90 GB | 0.016138 | **1.61x** closer |
+| MS3 | 12.79 GB | 0.015699 | UD-Q3_K_XL | 12.80 GB | 0.025538 | **1.63x** closer |
+| MS2.7 | 10.58 GB | 0.034064 | UD-IQ3_XXS | 10.58 GB | 0.055020 | **1.62x** closer |
 
 Compared against Unsloth Dynamic 3 (UD3): unsloth's files at revision 4ca72078 (August 2026). Mean KL divergence over
 English wiki, web, code and math text the files were not made from; lower is better. unsloth's sizes are without the MTP
@@ -90,17 +90,18 @@ RTX Spark (GB10), 20 chat prompts x 256 tokens, greedy, tokens per second:
 |---|---|---|---|---|
 | **MS4.3** + our 0.30 GB MTP file | 14.4 | **31.6** | **2.20x** | ~0.9 GB |
 | **MS2.7** + our 0.30 GB MTP file | 20.8 | **43.7** | **2.10x** | ~0.9 GB |
-| unsloth UD-Q4_K_XL (current UD3.1 file) + their 1.37 GB MTP file | 14.7 | 32.1 | 2.18x | ~1.7 GB |
+| unsloth UD-Q4_K_XL (UD3.1, revision ce331efc) + their 1.37 GB MTP file | 14.7 | 32.1 | 2.18x | ~1.7 GB |
 | unsloth UD-IQ3_XXS + their 1.37 GB MTP file | 21.4 | 38.9 | 1.82x | ~1.7 GB |
 
-With MTP on, MS4.3 runs at 98% of the speed of unsloth's file of the same size with its MTP file, and MS2.7 at 112%.
+With MTP on, MS4.3 runs at 98% of the speed of unsloth's UD3.1 UD-Q4_K_XL with its MTP file, and MS2.7 at 112% of
+UD-IQ3_XXS's.
 
 ## Speed
 
-- **Generation:** about the same as unsloth (98%). Without MTP in the chat benchmark above, on the same engine: MS4.3
+- **Generation:** about the same as unsloth (97-98%). Without MTP in the chat benchmark above, on the same engine: MS4.3
   14.40 vs 14.72 tokens/s, MS2.7 20.80 vs 21.36.
 - **Prompt processing** on the RTX Spark (GB10), relative to unsloth's file of the same size: MS2.7 1.04x, MS3 1.00x,
-  MS4 0.94x, MS4.3 0.92x, a kernel limit on that machine.
+  MS4 0.94x, MS4.3 0.92x against UD-Q4_K_XL (UD3.1, revision ce331efc); a kernel limit on that machine.
 
 The MS4.3 speed comparisons (MTP, generation, prompt processing) use unsloth's current UD-Q4_K_XL (the UD3.1 file,
 revision ce331efc), since the August file was not available for those runs.
