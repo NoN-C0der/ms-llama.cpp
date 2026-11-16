@@ -3,13 +3,16 @@
 **MS (Mad Shift)** quants of [Qwen3.8-27B](https://huggingface.co/devvexus/Qwen3.8-27B-MS), and **ms-llama.cpp**, the llama.cpp fork that runs them.
 
 - **Accuracy:** 1.61-2.31x lower KL divergence than unsloth's UD3 file of the same size (1): 1.61-1.63x for MS2.7-MS3.5, 1.90-2.31x for MS3.7-MS5.
+- **Top-1:** the most likely next token matches the original BF16 model's 93.8-98.7% of the time, vs 91.8-97.9% for unsloth's UD3 file of the same size: 22-35% fewer mismatches (1).
 - **Speed:** generation about the same as unsloth (98-100%) (2). MTP doubles it: 2.0-2.2x faster than without MTP, MS4.3 31.8 tokens/s, MS2.7 42.7 tokens/s on an RTX Spark (3).
 - **Memory:** every file no larger than its unsloth file, except MS4.3 (+0.09 GB) (1). MTP adds ~0.9 GiB; unsloth's MTP file adds ~1.4 GiB on the same file (~1.7 GiB with their own files) (3).
 - **MTP:** our own MS-coded MTP file, 0.30 GB, one for every size (it borrows the loaded file's token table and output head); unsloth's is 1.37 GB. It drafts as well as unsloth's 4.5x larger MTP file and runs a little faster: on the same MS4.3 file 62.9% vs 62.5% of drafts accepted, 31.8 vs 29.7 tokens/s (3).
 
-<sub>(1) KL divergence from the original BF16 model, mean over four English texts. UD3 = Unsloth Dynamic 3, unsloth's files at revision `4ca72078` (August 2026); their sizes without their 351 MB MTP block. (2) Chat benchmark without MTP, MS and unsloth files both on ms-llama.cpp. (3) RTX Spark (GB10), 20 chat prompts x 256 tokens, greedy; unsloth's files with their own MTP file, also on ms-llama.cpp; GPU memory from nvidia-smi.</sub>
+<sub>(1) KL divergence from the original BF16 model, mean over four English texts; top-1 = how often the quantized model's most likely next token is the BF16 model's. UD3 = Unsloth Dynamic 3, unsloth's files at revision `4ca72078` (August 2026); their sizes without their 351 MB MTP block. (2) Chat benchmark without MTP, MS and unsloth files both on ms-llama.cpp. (3) RTX Spark (GB10), 20 chat prompts x 256 tokens, greedy; unsloth's files with their own MTP file, also on ms-llama.cpp; GPU memory from nvidia-smi.</sub>
 
 ![KL divergence vs size](docs/images/qwen3.8-27b_kld.png)
+
+![Top-1 agreement vs size](docs/images/qwen3.8-27b_top1.png)
 
 ![MTP: one MS file for every size vs unsloth's](docs/images/qwen3.8-27b_mtp.png)
 
@@ -109,9 +112,9 @@ RTX Spark (GB10), 20 chat prompts x 256 tokens, greedy, both on ms-llama.cpp; un
 | **MS4.3 + ours** | **31.8** | 2.16x | 62.9% | +0.91 GiB |
 | UD-Q4_K_XL + unsloth's | 32.4 | 2.19x | 63.8% | +1.69 GiB |
 | **MS2.7 + ours** | **42.7** | 2.00x | 65.9% | +0.87 GiB |
-| UD-IQ3_XXS + unsloth's | 39.9 | 1.83x | 62.0% | +1.69 GiB |
+| UD-IQ3_XXS + unsloth's | 38.7 | 1.77x | 62.0% | +1.71 GiB |
 
-With MTP on, MS4.3 runs at 98% and MS2.7 at 107% of unsloth's speed. Extra GPU memory is nvidia-smi with MTP on minus off
+With MTP on, MS4.3 runs at 98% and MS2.7 at 110% of unsloth's speed. Extra GPU memory is nvidia-smi with MTP on minus off
 (GiB = 1024 MiB); unsloth's MTP file loaded with MS4.3 instead adds ~1.4 GiB.
 
 ## Speed
