@@ -173,7 +173,7 @@ calibration-aware, layer-by-layer conversion. MS uses the bitshift-trellis const
 
 - **NVIDIA GPUs (CUDA):** supported. The Windows x64 build needs an RTX 20 series or newer card; the ARM64 build is for
   Windows on ARM with an NVIDIA GPU (RTX Spark, DGX Spark).
-- **CPU (x86, ARM):** works, slower.
+- **CPU (x86, ARM):** works. Against unsloth's Q4_K_M on the same CPU, Qwen3.5-2B MS4 runs at about the same speed on x86 (prompt 1.00-1.07x, generation 0.94-0.98x on a Ryzen 7 7800X3D); on ARM (the RTX Spark's CPU) it reads prompts faster (1.08x) and generates slower (0.82x). MS also keeps its prompt speed at every size: 432-462 tokens/s from MS2.7 to MS5 on that ARM CPU, while the same-size unsloth files below Q4_K_M (IQ4_XS, Q3_K_M, UD-IQ2_M) read 94-226 tokens/s.
 - **Apple Metal** and other GPU backends: not yet.
 
 ## Credit and citation
