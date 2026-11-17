@@ -164,8 +164,7 @@ which read prompts faster and measured the same mean KLD (Qwen3.5-2B MS4, wiki t
 MS (Mad Shift) is a family of GGUF weight types (`MS_C1` ... `MS_C6`, 1 to 6 bits per weight) with its own CUDA and CPU
 (x86, ARM) kernels in this fork. The files are made with the bitshift-trellis construction described in QTIP + our own
 calibration-aware, layer-by-layer conversion. MS uses the bitshift-trellis construction and the 1MAD decoding function described in **QTIP** (Tseng, Sun, Hou and De Sa, NeurIPS
-2024, [arXiv:2406.11235](https://arxiv.org/abs/2406.11235)). To our knowledge, MS (Mad Shift) is the first GGUF format built on
-the bitshift-trellis construction described in QTIP. This repository runs MS files; format details are in
+2024, [arXiv:2406.11235](https://arxiv.org/abs/2406.11235)). This repository runs MS files; format details are in
 [docs/ms.md](docs/ms.md).
 
 **Making MS files.** The released MS files are made with a separate conversion tool that is not published. A lightweight MS encoder for this fork's `llama-quantize`, built for fast conversion, is in development, so that anyone can make MS files of most models on their own hardware.
