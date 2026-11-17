@@ -4,11 +4,11 @@
 
 - **Accuracy:** 1.61-2.31x lower KL divergence than unsloth's UD3 file of the same size (1): 1.61-1.63x for MS2.7-MS3.5, 1.90-2.31x for MS3.7-MS5.
 - **Top-1:** the most likely next token matches the original BF16 model's 93.8-98.7% of the time, vs 91.8-97.9% for unsloth's UD3 file of the same size: 22-35% fewer mismatches (1).
-- **Speed:** generation about the same as unsloth (98-100% on an RTX Spark, 97% on an RTX 4080 SUPER) (2)(4). MTP doubles it: 2.0-2.2x faster than without MTP, MS4.3 31.8 tokens/s, MS2.7 42.7 tokens/s on an RTX Spark (3); MS2.7 101 vs 97 tokens/s for unsloth's same-size file on an RTX 4080 SUPER (4).
-- **Memory:** every file no larger than its unsloth file, except MS4.3 (+0.09 GB) (1). MTP adds ~0.9 GiB; unsloth's MTP file adds ~1.4 GiB on the same file (~1.7 GiB with their own files) (3).
-- **MTP:** our own MS-coded MTP file, 0.30 GB, one for every size (it borrows the loaded file's token table and output head); unsloth's is 1.37 GB. It drafts as well as unsloth's 4.5x larger MTP file and runs a little faster: on the same MS4.3 file 62.9% vs 62.5% of drafts accepted, 31.8 vs 29.7 tokens/s (3).
+- **Speed:** generation about the same as unsloth (98-100% on an RTX Spark, 97% on an RTX 4080 SUPER) (2)(4). MTP doubles it: 2.1x faster than without MTP, MS4.3 32.4 tokens/s, MS2.7 46.6 tokens/s on an RTX Spark (3); MS2.7 101 vs 97 tokens/s for unsloth's same-size file with their separate MTP file on an RTX 4080 SUPER (4).
+- **Memory:** every file no larger than its unsloth file, except MS4.3 (+0.09 GB) (1). MTP adds about 0.9-1.0 GiB, about as much as the MTP block inside unsloth's files (their separate MTP file adds 1.6-1.7 GiB) (3).
+- **MTP:** our own MS-coded MTP file, 0.30 GB; one file serves every size (it borrows the loaded file's token table and output head). Against the MTP block inside unsloth's files, MS2.7 is 16% faster with less GPU memory, and MS4.3 is about as fast, with 274 MiB more GPU memory (3).
 
-<sub>(1) KL divergence from the original BF16 model, mean over four English texts; top-1 = how often the quantized model's most likely next token is the BF16 model's. UD3 = Unsloth Dynamic 3, unsloth's files at revision `4ca72078` (August 2026); their sizes without their 351 MB MTP block. (2) Chat benchmark without MTP on an RTX Spark, MS and unsloth files both on ms-llama.cpp. (3) RTX Spark (GB10), 20 chat prompts x 256 tokens, greedy; unsloth's files with their own MTP file, also on ms-llama.cpp; GPU memory from nvidia-smi. (4) RTX 4080 SUPER 16 GB, same benchmark, x64 release build, medians of 3; unsloth's UD-IQ3_XXS with their MTP file reaches 97.1 tokens/s there.</sub>
+<sub>(1) KL divergence from the original BF16 model, mean over four English texts; top-1 = how often the quantized model's most likely next token is the BF16 model's. UD3 = Unsloth Dynamic 3, unsloth's files at revision `4ca72078` (August 2026); their sizes without their 351 MB MTP block. (2) Chat benchmark without MTP on an RTX Spark, MS and unsloth files both on ms-llama.cpp. (3) RTX Spark (GB10), 20 chat prompts x 256 tokens, greedy, one session on the released build; unsloth's files with the MTP block inside the file and with their separate MTP file, also on ms-llama.cpp; GPU memory from nvidia-smi. (4) RTX 4080 SUPER 16 GB, same benchmark, x64 release build, medians of 3; unsloth's UD-IQ3_XXS with their separate MTP file reaches 97.1 tokens/s there (the built-in block was not measured there).</sub>
 
 ![KL divergence vs size](docs/images/qwen3.8-27b_kld.png)
 
@@ -119,26 +119,31 @@ These repositories are private until launch.
 One 0.30 GB MTP file, `mtp-Qwen3.8-27B-MS.gguf`, works with every tier: it holds only the MTP block and borrows the loaded
 tier's token table and output head. `--spec-type draft-mtp` turns it on. The model checks every drafted token.
 
-RTX Spark (GB10), 20 chat prompts x 256 tokens, greedy, both on ms-llama.cpp; unsloth's files with their own MTP file:
+RTX Spark (GB10), 20 chat prompts x 256 tokens, greedy, one session on the released build, all on ms-llama.cpp; unsloth's files with the MTP block inside the model file and with their separate MTP file:
 
-| Model + MTP file | tokens/s | speedup | drafts accepted | extra GPU memory |
+| Model + MTP | tokens/s | speedup | drafts accepted | extra GPU memory |
 |---|---|---|---|---|
-| **MS4.3 + ours** | **31.8** | 2.16x | 62.9% | +0.91 GiB |
-| UD-Q4_K_XL + unsloth's | 32.4 | 2.19x | 63.8% | +1.69 GiB |
-| **MS2.7 + ours** | **42.7** | 2.00x | 65.9% | +0.87 GiB |
-| UD-IQ3_XXS + unsloth's | 38.7 | 1.77x | 62.0% | +1.71 GiB |
+| MS4.3, no MTP | 15.2 | - | - | - |
+| **MS4.3 + ours** | **32.4** | 2.12x | 62.9% | +1.05 GiB |
+| UD-Q4_K_XL, no MTP | 15.3 | - | - | - |
+| UD-Q4_K_XL + MTP block inside the file | 31.6 | 2.07x | 64.5% | +0.90 GiB |
+| UD-Q4_K_XL + unsloth's separate MTP file | 33.8 | 2.22x | 63.8% | +1.62 GiB |
+| MS2.7, no MTP | 22.5 | - | - | - |
+| **MS2.7 + ours** | **46.6** | 2.07x | 65.9% | +0.90 GiB |
+| UD-IQ3_XXS, no MTP | 22.7 | - | - | - |
+| UD-IQ3_XXS + MTP block inside the file | 40.3 | 1.77x | 62.0% | +0.93 GiB |
+| UD-IQ3_XXS + unsloth's separate MTP file | 42.1 | 1.85x | 62.0% | +1.68 GiB |
 
-With MTP on, MS4.3 runs at 98% and MS2.7 at 110% of unsloth's speed. Extra GPU memory is nvidia-smi with MTP on minus off
-(GiB = 1024 MiB); unsloth's MTP file loaded with MS4.3 instead adds ~1.4 GiB.
+With MTP on, MS4.3 runs at 102% of unsloth's speed with the MTP block inside their file and 96% with their separate MTP file; MS2.7 at 116% and 111%. Extra GPU memory is nvidia-smi with MTP on minus off (GiB = 1024 MiB).
 
-On an RTX 4080 SUPER (16 GB), same benchmark, x64 release build, medians of 3:
+On an RTX 4080 SUPER (16 GB), same benchmark, x64 release build, medians of 3, with unsloth's separate MTP file (the built-in block was not measured there):
 
 | Model + MTP file | tokens/s without MTP | with MTP | speedup | drafts accepted | extra GPU memory |
 |---|---|---|---|---|---|
 | **MS2.7 + ours** | 51.1 | **101.2** | 1.98x | 65.7% | +0.91 GiB |
-| UD-IQ3_XXS + unsloth's | 53.0 | 97.1 | 1.83x | 62.3% | +1.67 GiB |
+| UD-IQ3_XXS + unsloth's separate MTP file | 53.0 | 97.1 | 1.83x | 62.3% | +1.67 GiB |
 
-MS2.7 runs at 104% of unsloth's MTP speed there.
+MS2.7 runs at 104% of unsloth's speed with their separate MTP file there.
 
 ## Speed
 
@@ -167,7 +172,7 @@ calibration-aware, layer-by-layer conversion. MS uses the bitshift-trellis const
 2024, [arXiv:2406.11235](https://arxiv.org/abs/2406.11235)). This repository runs MS files; format details are in
 [docs/ms.md](docs/ms.md).
 
-**Making MS files.** The released MS files are made with a separate conversion tool that is not published. A lightweight MS encoder for this fork's `llama-quantize`, built for fast conversion, is in development, so that anyone can make MS files of most models on their own hardware.
+**Making MS files.** The released MS files are made with the MS converter, open source (Apache 2.0) at https://github.com/devvexus/mad-shift-converter. A lightweight MS encoder for this fork's `llama-quantize`, built for fast conversion, is in development, so that anyone can make MS files of most models on their own hardware.
 
 ## Hardware
 
