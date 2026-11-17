@@ -186,6 +186,7 @@ calibration-aware, layer-by-layer conversion. MS uses the bitshift-trellis const
 MS (Mad Shift) was created by **Matthew Priester** ([GitHub](https://github.com/devvexus),
 [ORCID 0009-0000-0032-5292](https://orcid.org/0009-0000-0032-5292)). Please credit *MS (Mad Shift) by Matthew Priester*.
 
+- Technical report: Priester, M. (2026). MS (Mad Shift): Trellis-Coded GGUF Quantization for llama.cpp (Version 1.0). Zenodo. [https://doi.org/10.5281/zenodo.24145285](https://doi.org/10.5281/zenodo.24145285)
 - How to cite: [CITATION.cff](CITATION.cff) (GitHub's "Cite this repository"). Please cite QTIP too.
 - [NOTICE](NOTICE): the credit notice; keep it when you copy or adapt the MS code.
 - [LICENSE](LICENSE): MIT, like llama.cpp: "Copyright (c) 2023-2026 The ggml authors" and "Copyright (c) 2026 Matthew
