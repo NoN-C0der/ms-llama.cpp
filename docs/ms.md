@@ -31,6 +31,8 @@ cmake --build build --config Release -j
 ./build/bin/llama-cli -m <MS file>.gguf -ngl 99
 ```
 
+On ARM CPUs the default fast path rounds activations to 8 bits, as llama.cpp does for its own quantized types, which raises the KL divergence slightly; `--no-repack` selects the exact path, which matched the CUDA build in our test.
+
 ## Credit
 
 MS uses the bitshift-trellis construction and the 1MAD decoding function described in QTIP: A. Tseng, Q. Sun, D. Hou, C. De Sa, *QTIP: Quantization with Trellises and Incoherence
