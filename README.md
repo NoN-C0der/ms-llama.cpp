@@ -112,7 +112,7 @@ With the server running:
   plus one MTP file, `mtp-Qwen3.8-27B-MS.gguf` (0.30 GB, in the top folder).
 - [devvexus/Qwen3.5-2B-MS](https://huggingface.co/devvexus/Qwen3.5-2B-MS).
 
-These repositories are private until launch.
+Evaluation texts: [devvexus/ms-eval-texts](https://huggingface.co/datasets/devvexus/ms-eval-texts)
 
 ## MTP: one small file, twice the speed
 
