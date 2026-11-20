@@ -1826,6 +1826,7 @@ static struct ggml_tensor * ggml_new_tensor_impl(
         size_t                view_offs) {
 
     GGML_ASSERT(type >= 0 && type < GGML_TYPE_COUNT);
+    GGML_ASSERT(type_traits[type].blck_size > 0 && "unused or removed ggml type id");
     GGML_ASSERT(n_dims >= 1 && n_dims <= GGML_MAX_DIMS);
 
     // find the base tensor and absolute offset

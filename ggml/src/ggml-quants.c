@@ -5570,7 +5570,8 @@ static bool validate_e_e8m0(uint8_t e, size_t i) {
     }
 
 bool ggml_validate_row_data(enum ggml_type type, const void * data, size_t nbytes) {
-    if (type < 0 || type >= GGML_TYPE_COUNT) {
+    // an unused id (44..200) or a removed type has type size 0
+    if (type < 0 || type >= GGML_TYPE_COUNT || ggml_type_size(type) == 0) {
         fprintf(stderr, "%s: invalid type %d\n", __func__, type);
         return false;
     }
