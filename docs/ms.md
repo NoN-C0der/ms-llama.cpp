@@ -10,7 +10,10 @@ Models: [huggingface.co/devvexus](https://huggingface.co/devvexus) ("MS Quants" 
 
 ## Format
 
-- **Types:** `MS_C1` ... `MS_C6` (k = 1..6 bits per weight; type ids 43..48 on this fork's master), file type 42.
+- **Types:** `MS_C1` ... `MS_C6` (k = 1..6 bits per weight; type ids 201..206, the block 200..215 is reserved for MS), file type 200.
+  These are the "Gen 2" ids. Files for release 1 (ms-v1.0) use 43..48 and file type 42 ("Gen 1"), ids upstream now gives to
+  other types: this build refuses them with a clear error; `python gguf-py/gguf/scripts/gguf_ms_migrate.py <gen1.gguf> <gen2.gguf>`
+  rewrites the header of a copy (the data stays byte-identical).
 - **Block:** 512 weights along a row: fp16 scale `d`, 16-bit field holding the 14-bit start state `s0`, then 511 k-bit symbols
   (MSB first, k zero pad bits): k + 0.0625 bits per weight.
 - **Decode** (the bitshift-trellis construction and the computed "1MAD" decoding function described in QTIP): for each weight, `s = ((s << k) | symbol) & 0x3FFF`
