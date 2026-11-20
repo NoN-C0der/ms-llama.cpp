@@ -7,6 +7,9 @@
 # each type id is a uint32 in the tensor info and file_type a uint32 value, both rewritten in place in a copy of the file.
 # The tensor data and every offset stay byte-identical; the output is checked against the input before it is kept.
 #
+# Optional: Gen 1 files load as they are (ggml and GGUFReader map 43..48 to 201..206 in files with msffn.* keys). The rewrite
+# makes the mapping permanent, e.g. for tools outside this fork.
+#
 # usage: python gguf-py/gguf/scripts/gguf_ms_migrate.py <gen1.gguf> <gen2.gguf>
 #        python gguf-py/gguf/scripts/gguf_ms_migrate.py --check <file.gguf> [...]
 from __future__ import annotations
@@ -45,7 +48,7 @@ GEN1_SIZES   = {g1: GGML_QUANT_SIZES[GGMLQuantizationType(g2)] for g1, g2 in GEN
 
 
 class HeaderReader(GGUFReader):
-    # keeps the raw tensor info: this gguf-py reads the Gen 1 ids as other types (43 = F8_E4M3) or not at all (44..48)
+    # keeps the raw tensor info (the stored ids, without the mapping of GGUFReader)
     def _build_tensors(self, start_offs: int, fields: list) -> None:
         self.tensor_fields = fields
         self.tensors = []

@@ -7528,12 +7528,11 @@ GGML_QUANT_SIZES: dict[GGMLQuantizationType, tuple[int, int]] = {
 # MS (Mad Shift) file generations. Gen 1 files (ms-llama.cpp release 1, ms-v1.0) store MS_C1..MS_C6 as 43..48 and
 # general.file_type 42; upstream later gave 43 to F8_E4M3 (and file type 42 to MOSTLY_F8_E4M3), so Gen 2 files use
 # the reserved MS block (MS_C1..MS_C6 = 201..206, file type MOSTLY_MS = 200). The blocks themselves are unchanged.
-# scripts/gguf_ms_migrate.py rewrites a Gen 1 file as Gen 2.
+# Gen 1 files keep working: readers map 43..48 to 201..206 in files with msffn.* keys (GGUFReader here, gguf.cpp in ggml);
+# scripts/gguf_ms_migrate.py can also rewrite a Gen 1 file as Gen 2 for good.
 MS_GEN1_TYPE_IDS  = range(43, 49)
 MS_GEN2_TYPE_IDS  = range(GGMLQuantizationType.MS_C1, GGMLQuantizationType.MS_C6 + 1)
 MS_GEN1_FILE_TYPE = 42
-MS_GEN1_ERROR     = ("MS Gen 1 file: use ms-llama.cpp release 1 (ms-v1.0), or migrate it with "
-                     "'python gguf-py/gguf/scripts/gguf_ms_migrate.py <gen1.gguf> <gen2.gguf>'")
 
 
 def ms_is_metadata_key(key: str) -> bool:

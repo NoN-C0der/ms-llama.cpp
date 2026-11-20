@@ -1,7 +1,8 @@
 name: CI (MS)
 
 # Small CPU-only check of the MS (Mad Shift) parts of the fork on GitHub-hosted runners: the MS CPU kernels (test-ms-c),
-# the MS cases of test-backend-ops on CPU, and the MS Gen 1 -> Gen 2 migration on a tiny synthetic GGUF (no model downloads).
+# the MS cases of test-backend-ops on CPU, and MS Gen 1 files (type ids 43..48) on tiny synthetic GGUFs: they load as MS types,
+# while id 43 in a file without msffn.* keys stays F8_E4M3; plus the optional Gen 1 -> Gen 2 migration (no model downloads).
 
 on:
   workflow_dispatch: # allows manual triggering
@@ -92,16 +93,20 @@ jobs:
         run: |
           $BIN/test-backend-ops test -b CPU -p ms_c
 
-      - name: MS Gen 1 -> Gen 2 migration
+      - name: MS Gen 1 files and the migration
         shell: bash
         run: |
           python -m pytest -q gguf-py/tests/test_ms_migrate.py
           python gguf-py/tests/test_ms_migrate.py --write-dir build/ms-synth
-          # the C++ loader: a Gen 1 file fails with the MS Gen 1 message, the Gen 2 file loads
-          if $BIN/llama-gguf build/ms-synth/gen1.gguf r n > gen1.log 2>&1; then
-            echo "a Gen 1 file loaded"; cat gen1.log; exit 1
-          fi
-          grep -q "MS Gen 1 file" gen1.log || { cat gen1.log; exit 1; }
-          $BIN/llama-gguf build/ms-synth/gen2.gguf r n
-          # prism.hadamard keys without msffn keys are not MS: its F8_E4M3 tensor (id 43) loads
-          $BIN/llama-gguf build/ms-synth/prism_f8.gguf r n
+          # the C++ loader reads a Gen 1 file (msffn.* keys, ids 43..48) with the MS types, like its Gen 2 twin
+          $BIN/llama-gguf build/ms-synth/gen1.gguf r n > gen1.log 2>&1 || { cat gen1.log; exit 1; }
+          grep -q "MS Gen 1 file: mapping" gen1.log || { cat gen1.log; exit 1; }
+          $BIN/llama-gguf build/ms-synth/gen2.gguf r n > gen2.log 2>&1 || { cat gen2.log; exit 1; }
+          diff <(grep -o "type = [a-z0-9_]*" gen1.log) <(grep -o "type = [a-z0-9_]*" gen2.log)
+          grep -q "type = ms_c6" gen1.log
+          # id 43 without msffn.* keys is upstream's F8_E4M3, also with prism.hadamard keys (PrismML Bonsai)
+          for f in plain_f8 prism_f8; do
+            $BIN/llama-gguf build/ms-synth/$f.gguf r n > $f.log 2>&1 || { cat $f.log; exit 1; }
+            grep -q "type = f8_e4m3" $f.log || { cat $f.log; exit 1; }
+            if grep -q "MS Gen 1" $f.log; then cat $f.log; exit 1; fi
+          done

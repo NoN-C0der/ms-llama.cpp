@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-# MS (Mad Shift) Gen 1 -> Gen 2 migration (gguf/scripts/gguf_ms_migrate.py) on a tiny synthetic GGUF.
-# pytest gguf-py/tests/test_ms_migrate.py, or: python gguf-py/tests/test_ms_migrate.py --write-dir DIR (writes gen1.gguf and
-# gen2.gguf for a check of the C++ loader: a Gen 1 file must fail with "MS Gen 1 file", the Gen 2 file must load, and so must
-# prism_f8.gguf, prism.hadamard keys with an F8_E4M3 tensor but no msffn key).
+# MS (Mad Shift) Gen 1 files on tiny synthetic GGUFs: the reader maps their types 43..48 to MS_C1..MS_C6 (201..206) when the file
+# has msffn.* keys and only then, and the optional migration (gguf/scripts/gguf_ms_migrate.py) rewrites them as Gen 2.
+# pytest gguf-py/tests/test_ms_migrate.py, or: python gguf-py/tests/test_ms_migrate.py --write-dir DIR (writes gen1.gguf, gen2.gguf,
+# prism_f8.gguf and plain_f8.gguf for a check of the C++ loader: gen1 loads with MS types, the two F8 files load as F8_E4M3).
 from __future__ import annotations
 
 import argparse
@@ -47,12 +47,22 @@ def write_gen2(path: Path) -> None:
 
 def write_prism_f8(path: Path) -> None:
     # not an MS file: prism.hadamard.* keys (as upstream writes for PrismML Bonsai models, here with the key names MS also uses)
-    # and a real F8_E4M3 tensor (type id 43), but no msffn.* key: it must load, not fail as MS Gen 1
+    # and a real F8_E4M3 tensor (type id 43), but no msffn.* key: its 43 stays F8_E4M3
     w = gguf.GGUFWriter(path, 'llama')
     w.add_uint32('prism.hadamard.version', 2)
     w.add_array('prism.hadamard.weight_names', ['w'])
     w.add_array('prism.hadamard.weight_sign_ids', [0])
     w.add_tensor('w', np.zeros(512, dtype=np.uint8), raw_dtype=GGMLQuantizationType.F8_E4M3)
+    w.write_header_to_file()
+    w.write_kv_data_to_file()
+    w.write_tensors_to_file()
+    w.close()
+
+
+def write_plain_f8(path: Path) -> None:
+    # an upstream file with an F8_E4M3 tensor (type id 43) and no extra keys
+    w = gguf.GGUFWriter(path, 'llama')
+    w.add_tensor('w', np.arange(512, dtype=np.uint8), raw_dtype=GGMLQuantizationType.F8_E4M3)
     w.write_header_to_file()
     w.write_kv_data_to_file()
     w.write_tensors_to_file()
@@ -74,14 +84,23 @@ def make_gen1(src: Path, dst: Path) -> None:
     gc.collect()
 
 
-def test_reader_rejects_gen1(tmp_path):
-    import pytest
+def test_reader_maps_gen1(tmp_path):
+    # a Gen 1 file reads like its Gen 2 twin: the same types, shapes and bytes
     write_gen2(tmp_path / 'gen2.gguf')
     make_gen1(tmp_path / 'gen2.gguf', tmp_path / 'gen1.gguf')
-    with pytest.raises(ValueError, match='MS Gen 1 file'):
-        gguf.GGUFReader(tmp_path / 'gen1.gguf')
-    r = gguf.GGUFReader(tmp_path / 'gen2.gguf')
-    assert [int(t.tensor_type) for t in r.tensors[:6]] == list(MS_GEN2_TYPE_IDS)
+    r1 = gguf.GGUFReader(tmp_path / 'gen1.gguf')
+    r2 = gguf.GGUFReader(tmp_path / 'gen2.gguf')
+    assert [int(t.tensor_type) for t in r2.tensors[:6]] == list(MS_GEN2_TYPE_IDS)
+    assert [int(t.tensor_type) for t in r1.tensors] == [int(t.tensor_type) for t in r2.tensors]
+    for a, b in zip(r1.tensors, r2.tensors):
+        assert a.name == b.name and a.shape.tolist() == b.shape.tolist() and bytes(a.data) == bytes(b.data)
+
+
+def test_f8_without_msffn_stays_f8(tmp_path):
+    write_plain_f8(tmp_path / 'plain_f8.gguf')
+    r = gguf.GGUFReader(tmp_path / 'plain_f8.gguf')
+    assert [int(t.tensor_type) for t in r.tensors] == [int(GGMLQuantizationType.F8_E4M3)]
+    assert bytes(r.tensors[0].data) == bytes(range(256)) * 2
 
 
 def test_prism_keys_alone_are_not_ms(tmp_path):
@@ -116,20 +135,21 @@ def test_migrate_refuses(tmp_path):
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument('--write-dir', required=True, help='directory for gen1.gguf, gen2.gguf, migrated.gguf and prism_f8.gguf')
+    ap.add_argument('--write-dir', required=True, help='directory for gen1.gguf, gen2.gguf, migrated.gguf, prism_f8.gguf, plain_f8.gguf')
     a = ap.parse_args()
     d = Path(a.write_dir)
     d.mkdir(parents=True, exist_ok=True)
-    for n in ('gen1.gguf', 'gen2.gguf', 'migrated.gguf', 'prism_f8.gguf'):
+    for n in ('gen1.gguf', 'gen2.gguf', 'migrated.gguf', 'prism_f8.gguf', 'plain_f8.gguf'):
         (d / n).unlink(missing_ok=True)
     write_prism_f8(d / 'prism_f8.gguf')
+    write_plain_f8(d / 'plain_f8.gguf')
     write_gen2(d / 'gen2.gguf')
     make_gen1(d / 'gen2.gguf', d / 'gen1.gguf')
     mig.migrate(d / 'gen1.gguf', d / 'migrated.gguf', do_verify=True)
     gc.collect()
     if (d / 'migrated.gguf').read_bytes() != (d / 'gen2.gguf').read_bytes():
         raise SystemExit('the migrated file differs from the Gen 2 file')
-    print(f'wrote {d / "gen1.gguf"}, {d / "gen2.gguf"}, {d / "prism_f8.gguf"}; the migration of gen1 equals gen2')
+    print(f'wrote gen1.gguf, gen2.gguf, prism_f8.gguf, plain_f8.gguf in {d}; the migration of gen1 equals gen2')
 
 
 if __name__ == '__main__':

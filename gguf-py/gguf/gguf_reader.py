@@ -30,7 +30,8 @@ from gguf.constants import (
     GGMLQuantizationType,
     GGUFValueType,
     GGUFEndian,
-    MS_GEN1_ERROR,
+    MS_GEN1_TYPE_IDS,
+    MS_GEN2_TYPE_IDS,
     ms_is_gen1,
 )
 
@@ -335,9 +336,9 @@ class GGUFReader:
         return offs, tensor_fields
 
     def _build_tensors(self, start_offs: int, fields: list[ReaderField]) -> None:
-        # an MS (Mad Shift) Gen 1 file would read as F8_E4M3 or unknown types
-        if ms_is_gen1(self.fields.keys(), (int(field.parts[4][0]) for field in fields)):
-            raise ValueError(MS_GEN1_ERROR)
+        # an MS (Mad Shift) Gen 1 file stores MS_C1..MS_C6 as 43..48: read them as 201..206 (the file itself is not changed;
+        # field.parts and general.file_type keep the stored values)
+        ms_gen1 = ms_is_gen1(self.fields.keys(), (int(field.parts[4][0]) for field in fields))
         tensors = []
         tensor_names = set() # keep track of name to prevent duplicated tensors
         for field in fields:
@@ -347,7 +348,10 @@ class GGUFReader:
             if tensor_name in tensor_names:
                 raise ValueError(f'Found duplicated tensor with name {tensor_name}')
             tensor_names.add(tensor_name)
-            ggml_type = GGMLQuantizationType(raw_dtype[0])
+            raw_type = int(raw_dtype[0])
+            if ms_gen1 and raw_type in MS_GEN1_TYPE_IDS:
+                raw_type = MS_GEN2_TYPE_IDS[raw_type - MS_GEN1_TYPE_IDS[0]]
+            ggml_type = GGMLQuantizationType(raw_type)
             # use Python ints: np.prod on uint64 wraps silently on overflow
             n_elems = 1
             for dim in dims.tolist():
