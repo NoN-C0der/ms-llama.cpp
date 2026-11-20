@@ -1,0 +1,468 @@
+name: MS Release
+
+# Releases of the MS fork, on GitHub-hosted runners only (upstream's release.yml is limited to ggml-org/llama.cpp).
+# - every push to master that touches the code builds the binaries and publishes them as a PRE-release ms-b<N>
+#   (N = the number of commits on master; "[no release]" in the commit message skips it)
+# - a manual run (Actions > MS Release > Run workflow, or gh workflow run) does the same for the chosen branch, and with a
+#   version (ms-vX.Y) it then also publishes that build as a full release marked latest
+# - .github/workflows/ms-promote.yml promotes an existing pre-release to a full release without building again
+# See RELEASING.md.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Full release to create from this build, e.g. ms-v1.1 (empty: pre-release only)'
+        required: false
+        default: ''
+        type: string
+  push:
+    branches:
+      - master
+    paths: [
+      '.github/workflows/ms-release.yml',
+      '**/CMakeLists.txt',
+      '**/.cmake',
+      '**/*.h',
+      '**/*.hpp',
+      '**/*.c',
+      '**/*.cpp',
+      '**/*.cu',
+      '**/*.cuh',
+      '**/*.m',
+      '**/*.metal',
+    ]
+
+# actions: write for the reusable ui-build workflow (as in upstream's release.yml)
+permissions:
+  actions: write
+  contents: read
+
+concurrency:
+  group: ms-release
+  cancel-in-progress: false
+
+env:
+  CMAKE_ARGS: "-DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_TOOLS=ON -DLLAMA_BUILD_SERVER=ON"
+
+jobs:
+  tag:
+    if: ${{ github.repository == 'devvexus/ms-llama.cpp' }}
+    runs-on: ubuntu-24.04
+
+    outputs:
+      name: ${{ steps.tag.outputs.name }}
+      sha: ${{ steps.tag.outputs.sha }}
+      build: ${{ steps.tag.outputs.build }}
+
+    steps:
+      - name: Clone
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Tag name
+        id: tag
+        env:
+          COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          echo "name=ms-b$(git rev-list --count HEAD)" >> "$GITHUB_OUTPUT"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          if [[ "${{ github.event_name }}" == "push" ]] && echo "$COMMIT_MESSAGE" | grep -q '\[no release\]'; then
+            echo "build=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "build=true" >> "$GITHUB_OUTPUT"
+          fi
+          if [[ -n "$VERSION" && ! "$VERSION" =~ ^ms-v[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]; then
+            echo "::error::the version must look like ms-v1.1, got '$VERSION'"
+            exit 1
+          fi
+
+  ui-build:
+    needs: [tag]
+    if: ${{ needs.tag.outputs.build == 'true' }}
+    uses: ./.github/workflows/ui-build.yml
+    with:
+      ui_version: ${{ needs.tag.outputs.name }}
+
+  windows-cpu:
+    name: windows-cpu / ${{ matrix.arch }}
+    needs: [tag, ui-build]
+    if: ${{ needs.tag.outputs.build == 'true' }}
+    runs-on: windows-2025-vs2026
+
+    strategy:
+      matrix:
+        include:
+          - arch: 'x64'
+          - arch: 'arm64'
+
+    steps:
+      - name: Clone
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Download UI build
+        uses: actions/download-artifact@v8
+        with:
+          name: llama-ui.zip
+          path: ui/apps/chat/dist
+
+      - name: Install Ninja
+        run: |
+          choco install ninja
+
+      - name: Install LLVM
+        run: |
+          choco install llvm --version=22.1.8
+          echo "C:\Program Files\LLVM\bin" >> $env:GITHUB_PATH
+
+      - name: Build
+        shell: cmd
+        run: |
+          call "C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\Auxiliary\Build\vcvarsall.bat" ${{ matrix.arch == 'x64' && 'x64' || 'amd64_arm64' }}
+          cmake -S . -B build -G "Ninja Multi-Config" ^
+            -D CMAKE_TOOLCHAIN_FILE=cmake/${{ matrix.arch }}-windows-llvm.cmake ^
+            -DLLAMA_BUILD_BORINGSSL=ON ^
+            -DGGML_NATIVE=OFF ^
+            -DGGML_BACKEND_DL=ON ^
+            -DGGML_CPU_ALL_VARIANTS=${{ matrix.arch == 'x64' && 'ON' || 'OFF' }} ^
+            -DGGML_OPENMP=ON ^
+            -DGGML_OPENMP_FETCH=ON ^
+            ${{ env.CMAKE_ARGS }}
+          cmake --build build --config Release
+
+      - name: Pack artifacts
+        run: |
+          Copy-Item LICENSE, NOTICE .\build\bin\Release\
+          7z a -snl ms-win-cpu-${{ matrix.arch }}.zip .\build\bin\Release\*
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          path: ms-win-cpu-${{ matrix.arch }}.zip
+          archive: false
+
+  # only the CUDA backend: the publish job puts it next to the windows-cpu build of the same arch
+  windows-cuda:
+    name: windows-cuda (${{ matrix.cuda }}, ${{ matrix.arch }})
+    needs: [tag]
+    if: ${{ needs.tag.outputs.build == 'true' }}
+    runs-on: windows-2022
+
+    strategy:
+      matrix:
+        include:
+          # x64 stays on CUDA 12 (older drivers); the ms-llama-win-x64-cuda12.zip name is used by the README install line
+          - cuda: '12.4'
+            arch: x64
+            defines: '-DGGML_CUDA_CCCL_VERSION=v3.4.3'
+          - cuda: '13.5'
+            arch: arm64
+            defines: '-DCMAKE_TOOLCHAIN_FILE=cmake/arm64-windows-msvc-cuda.cmake'
+
+    steps:
+      - name: Clone
+        uses: actions/checkout@v6
+
+      - name: Install Cuda Toolkit
+        uses: ./.github/actions/windows-setup-cuda
+        with:
+          cuda_version: ${{ matrix.cuda }}
+          cuda_arch: ${{ matrix.arch }}
+
+      - name: Install Ninja
+        run: |
+          choco install ninja
+
+      - name: Build
+        shell: cmd
+        run: |
+          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsall.bat" ${{ matrix.arch == 'x64' && 'x64' || 'amd64_arm64' }}
+          cmake -S . -B build -G "Ninja Multi-Config" ^
+            -DGGML_BACKEND_DL=ON ^
+            -DGGML_NATIVE=OFF ^
+            -DGGML_CPU=OFF ^
+            -DGGML_CUDA=ON ^
+            -DLLAMA_BUILD_BORINGSSL=ON ${{ matrix.defines }}
+          set /A NINJA_JOBS=%NUMBER_OF_PROCESSORS%-1
+          cmake --build build --config Release -j %NINJA_JOBS% --target ggml-cuda
+
+      - name: Pack the CUDA backend and runtime
+        run: |
+          $dst = '.\build\bin\cudart\'
+          if ("${{ matrix.arch }}" -eq "x64") {
+            robocopy "${{ env.CUDA_PATH }}\bin" $dst cudart64_*.dll cublas64_*.dll cublasLt64_*.dll
+            robocopy "${{ env.CUDA_PATH }}\lib" $dst cudart64_*.dll cublas64_*.dll cublasLt64_*.dll
+            robocopy "${{ env.CUDA_PATH }}\bin\x64" $dst cudart64_*.dll cublas64_*.dll cublasLt64_*.dll
+          } else {
+            robocopy "${{ env.CUDA_PATH }}\bin\arm64" $dst cudart64_*.dll cublas64_*.dll cublasLt64_*.dll
+          }
+          Copy-Item .\build\bin\Release\ggml-cuda.dll $dst
+          # robocopy exits 1..7 on success, so the step result is the exit code of 7z
+          7z a ms-win-cuda-${{ matrix.cuda }}-${{ matrix.arch }}.zip "$dst*"
+          exit $LASTEXITCODE
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          path: ms-win-cuda-${{ matrix.cuda }}-${{ matrix.arch }}.zip
+          archive: false
+
+  ubuntu-cpu:
+    name: ubuntu-cpu / ${{ matrix.build }}
+    needs: [tag, ui-build]
+    if: ${{ needs.tag.outputs.build == 'true' }}
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      matrix:
+        include:
+          - build: 'x64'
+            os: ubuntu-22.04
+          - build: 'arm64'
+            os: ubuntu-24.04-arm
+
+    steps:
+      - name: Clone
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Download UI build
+        uses: actions/download-artifact@v8
+        with:
+          name: llama-ui.zip
+          path: ui/apps/chat/dist
+
+      - name: Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential libssl-dev
+
+      - name: Toolchain workaround (GCC 14)
+        if: ${{ contains(matrix.os, 'ubuntu-24.04') }}
+        run: |
+          sudo apt-get install -y gcc-14 g++-14
+          echo "CC=gcc-14" >> "$GITHUB_ENV"
+          echo "CXX=g++-14" >> "$GITHUB_ENV"
+
+      - name: Build
+        run: |
+          cmake -B build \
+            -DCMAKE_INSTALL_RPATH='$ORIGIN' \
+            -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON \
+            -DGGML_BACKEND_DL=ON \
+            -DGGML_NATIVE=OFF \
+            -DGGML_CPU_ALL_VARIANTS=ON \
+            ${{ env.CMAKE_ARGS }}
+          cmake --build build --config Release -j $(nproc)
+
+      - name: Pack artifacts
+        run: |
+          cp LICENSE NOTICE ./build/bin/
+          tar -czvf ms-llama-linux-${{ matrix.build }}-cpu.tar.gz --transform "s,^\.,ms-llama," -C ./build/bin .
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          path: ms-llama-linux-${{ matrix.build }}-cpu.tar.gz
+          archive: false
+
+  ubuntu-cuda:
+    name: ubuntu-cuda / ${{ matrix.build }}
+    needs: [tag, ui-build]
+    if: ${{ needs.tag.outputs.build == 'true' }}
+    runs-on: ${{ matrix.os }}
+    container: nvidia/cuda:13.5.0-devel-ubuntu24.04
+
+    strategy:
+      matrix:
+        include:
+          - build: 'x64'
+            os: ubuntu-24.04
+          - build: 'arm64'
+            os: ubuntu-24.04-arm
+
+    steps:
+      - name: Install git
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends git
+
+      - name: Clone
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Git safe directory
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: Download UI build
+        uses: actions/download-artifact@v8
+        with:
+          name: llama-ui.zip
+          path: ui/apps/chat/dist
+
+      - name: Dependencies
+        shell: bash
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends build-essential cmake ninja-build libssl-dev
+          # the container ships GCC 13, which does not know the 'sme' march feature of the armv9.2 CPU variant
+          if [[ "${{ matrix.build }}" == "arm64" ]]; then
+            apt-get install -y --no-install-recommends gcc-14 g++-14
+            echo "CC=gcc-14" >> "$GITHUB_ENV"
+            echo "CXX=g++-14" >> "$GITHUB_ENV"
+          fi
+
+      - name: Build
+        run: |
+          cmake -B build \
+            -DCMAKE_INSTALL_RPATH='$ORIGIN' \
+            -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON \
+            -DGGML_BACKEND_DL=ON \
+            -DGGML_NATIVE=OFF \
+            -DGGML_CPU_ALL_VARIANTS=ON \
+            -DGGML_CUDA=ON \
+            -DGGML_CUDA_NCCL=OFF \
+            ${{ env.CMAKE_ARGS }}
+          cmake --build build --config Release -j $(nproc)
+
+      - name: Pack artifacts (with the CUDA runtime libraries)
+        run: |
+          cp LICENSE NOTICE ./build/bin/
+          cp -L /usr/local/cuda/lib64/libcudart.so.13 /usr/local/cuda/lib64/libcublas.so.13 /usr/local/cuda/lib64/libcublasLt.so.13 ./build/bin/
+          tar -czvf ms-llama-linux-${{ matrix.build }}-cuda13.tar.gz --transform "s,^\.,ms-llama," -C ./build/bin .
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          path: ms-llama-linux-${{ matrix.build }}-cuda13.tar.gz
+          archive: false
+
+  macos:
+    name: macos / ${{ matrix.build }}
+    needs: [tag, ui-build]
+    if: ${{ needs.tag.outputs.build == 'true' }}
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      matrix:
+        include:
+          - build: 'arm64'
+            os: macos-26
+            defines: "-DGGML_METAL_EMBED_LIBRARY=ON -DCMAKE_OSX_DEPLOYMENT_TARGET=13.3"
+          - build: 'x64'
+            os: macos-15-intel
+            defines: "-DGGML_METAL=OFF -DCMAKE_OSX_DEPLOYMENT_TARGET=13.3"
+
+    steps:
+      - name: Clone
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Download UI build
+        uses: actions/download-artifact@v8
+        with:
+          name: llama-ui.zip
+          path: ui/apps/chat/dist
+
+      - name: Build
+        run: |
+          cmake -B build \
+            ${{ matrix.defines }} \
+            -DCMAKE_INSTALL_RPATH='@loader_path' \
+            -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON \
+            -DLLAMA_BUILD_BORINGSSL=ON \
+            ${{ env.CMAKE_ARGS }}
+          cmake --build build --config Release -j $(sysctl -n hw.logicalcpu)
+
+      - name: Pack artifacts
+        run: |
+          cp LICENSE NOTICE ./build/bin/
+          tar -czvf ms-llama-macos-${{ matrix.build }}.tar.gz -s ",^\.,ms-llama," -C ./build/bin .
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          path: ms-llama-macos-${{ matrix.build }}.tar.gz
+          archive: false
+
+  publish:
+    needs: [tag, windows-cpu, windows-cuda, ubuntu-cpu, ubuntu-cuda, macos]
+    if: ${{ needs.tag.outputs.build == 'true' }}
+    runs-on: ubuntu-24.04
+
+    permissions:
+      contents: write
+
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ needs.tag.outputs.name }}
+      SHA: ${{ needs.tag.outputs.sha }}
+
+    steps:
+      - name: Clone
+        uses: actions/checkout@v6
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v8
+        with:
+          path: ./artifact
+          merge-multiple: true
+          skip-decompress: true
+
+      - name: Assemble the release files
+        run: |
+          set -euo pipefail
+          R="$PWD/release"
+          mkdir -p "$R"
+          # Windows: the CPU build (llama-server, tools, CPU backend) plus the CUDA backend and runtime DLLs, in one flat zip
+          bundle() {
+            local d
+            d=$(mktemp -d)
+            unzip -q "$1" -d "$d"
+            unzip -q -o "$2" -d "$d"
+            (cd "$d" && zip -q -r "$R/$3" .)
+            rm -rf "$d"
+          }
+          bundle artifact/ms-win-cpu-x64.zip   artifact/ms-win-cuda-12.4-x64.zip   ms-llama-win-x64-cuda12.zip
+          bundle artifact/ms-win-cpu-arm64.zip artifact/ms-win-cuda-13.5-arm64.zip ms-llama-win-arm64-cuda.zip
+          cp artifact/ms-win-cpu-x64.zip   "$R/ms-llama-win-x64-cpu.zip"
+          cp artifact/ms-win-cpu-arm64.zip "$R/ms-llama-win-arm64-cpu.zip"
+          cp artifact/ms-llama-*.tar.gz "$R/"
+          ls -l "$R"
+
+      - name: Publish the pre-release
+        env:
+          COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            echo "$TAG exists, replacing its files"
+            gh release upload "$TAG" release/* --clobber
+          else
+            {
+              echo "Pre-release built automatically from \`${{ github.ref_name }}\` at $SHA."
+              echo
+              echo "Promote it with: \`gh workflow run ms-promote.yml -R ${{ github.repository }} -f version=ms-vX.Y -f from=$TAG\`"
+              echo
+              echo '```'
+              if [[ -n "${COMMIT_MESSAGE:-}" ]]; then echo "$COMMIT_MESSAGE"; else git log -1 --format=%B "$SHA" 2>/dev/null || true; fi
+              echo '```'
+            } > notes.md
+            gh release create "$TAG" release/* \
+              --target "$SHA" \
+              --title "ms-llama.cpp $TAG (pre-release)" \
+              --notes-file notes.md \
+              --prerelease \
+              --latest=false
+          fi
+
+      - name: Promote to a full release
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.version != '' }}
+        run: bash scripts/ms-release-promote.sh "${{ inputs.version }}" "$TAG"

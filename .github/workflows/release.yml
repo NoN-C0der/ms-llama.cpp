@@ -44,6 +44,8 @@ concurrency:
 
 jobs:
   check-release:
+    # MS fork: releases come from ms-release.yml (hosted runners only); every job below needs this one
+    if: ${{ github.repository == 'ggml-org/llama.cpp' }}
     runs-on: ubuntu-slim
 
     permissions:

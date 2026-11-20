@@ -39,6 +39,8 @@ permissions:
 
 jobs:
   make-release:
+    # MS fork: full releases come from ms-promote.yml / ms-release.yml
+    if: ${{ github.repository == 'ggml-org/llama.cpp' }}
     runs-on: ubuntu-26.04
 
     steps:

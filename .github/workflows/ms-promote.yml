@@ -1,0 +1,39 @@
+name: MS Promote
+
+# Turns an MS pre-release (ms-b<N>, made by ms-release.yml on every push to master) into a full release marked latest:
+# the same commit and the same files, no new build. See RELEASING.md.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release to create, e.g. ms-v1.1'
+        required: true
+        type: string
+      from:
+        description: 'Pre-release to promote, e.g. ms-b12345 (empty: the newest ms-b pre-release)'
+        required: false
+        default: ''
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ms-release
+  cancel-in-progress: false
+
+jobs:
+  promote:
+    if: ${{ github.repository == 'devvexus/ms-llama.cpp' }}
+    runs-on: ubuntu-24.04
+
+    env:
+      GH_TOKEN: ${{ github.token }}
+
+    steps:
+      - name: Clone
+        uses: actions/checkout@v6
+
+      - name: Promote
+        run: bash scripts/ms-release-promote.sh "${{ inputs.version }}" "${{ inputs.from }}"
