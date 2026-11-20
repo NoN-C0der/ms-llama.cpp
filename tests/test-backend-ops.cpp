@@ -13905,7 +13905,7 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     for (ggml_type type : ms_c_types) {
         for (bool use_id : {false, true}) {
             for (bool with_bias : {false, true}) {
-                test_cases.emplace_back(new test_mul_mat_vec_fusion(type, GGML_GLU_OP_SWIGLU, 1, 32, 512,
+                test_cases.emplace_back(new test_mul_mat_fusion(type, GGML_GLU_OP_SWIGLU, 1, 32, 512,
                     use_id, 16, 8, false, with_bias, true, false, {1, 1}));
             }
         }
@@ -13916,21 +13916,21 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     for (ggml_type type : ms_c_types) {
         for (ggml_glu_op glu_op : {GGML_GLU_OP_SWIGLU, GGML_GLU_OP_GEGLU}) {
             for (int64_t m_batch : {65, 128, 300}) {
-                test_cases.emplace_back(new test_mul_mat_vec_fusion(type, glu_op, m_batch, 160, 1024,
+                test_cases.emplace_back(new test_mul_mat_fusion(type, glu_op, m_batch, 160, 1024,
                     false, 16, 8, false, false, true, false, {1, 1}));
             }
         }
-        test_cases.emplace_back(new test_mul_mat_vec_fusion(type, GGML_GLU_OP_SWIGLU, 300, 4096, 512,
+        test_cases.emplace_back(new test_mul_mat_fusion(type, GGML_GLU_OP_SWIGLU, 300, 4096, 512,
             false, 16, 8, false, false, true, false, {1, 1}));
     }
     for (const auto & [type_up, type_gate] : std::vector<std::pair<ggml_type, ggml_type>>{
             {GGML_TYPE_MS_C6, GGML_TYPE_MS_C5}, {GGML_TYPE_MS_C3, GGML_TYPE_MS_C4}, {GGML_TYPE_MS_C5, GGML_TYPE_MS_C3},
             {GGML_TYPE_MS_C1, GGML_TYPE_MS_C2}, {GGML_TYPE_MS_C4, GGML_TYPE_MS_C6}}) {
         for (int64_t m_batch : {1, 4, 128, 300}) {
-            test_cases.emplace_back(new test_mul_mat_vec_fusion(type_up, GGML_GLU_OP_SWIGLU, m_batch, 160, 1024,
+            test_cases.emplace_back(new test_mul_mat_fusion(type_up, GGML_GLU_OP_SWIGLU, m_batch, 160, 1024,
                 false, 16, 8, false, false, true, false, {1, 1}, false, type_gate));
         }
-        test_cases.emplace_back(new test_mul_mat_vec_fusion(type_up, GGML_GLU_OP_SWIGLU, 300, 4096, 512,
+        test_cases.emplace_back(new test_mul_mat_fusion(type_up, GGML_GLU_OP_SWIGLU, 300, 4096, 512,
             false, 16, 8, false, false, true, false, {1, 1}, false, type_gate));
     }
 

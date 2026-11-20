@@ -2,6 +2,7 @@
 #include "mmvq.cuh"
 #include "unary.cuh"
 #include "cp-async.cuh"
+#include "graph.cuh"
 
 // Batched MS_C x f32 matrix multiplication on tensor cores (mma.m16n8k16, f16 inputs, f32 sums).
 //
