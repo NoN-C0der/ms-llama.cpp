@@ -1,0 +1,105 @@
+name: CI (MS)
+
+# Small CPU-only check of the MS (Mad Shift) parts of the fork on GitHub-hosted runners: the MS CPU kernels (test-ms-c),
+# the MS cases of test-backend-ops on CPU, and the MS Gen 1 -> Gen 2 migration on a tiny synthetic GGUF (no model downloads).
+
+on:
+  workflow_dispatch: # allows manual triggering
+  push:
+    branches:
+      - master
+    paths: [
+      '.github/workflows/ms-ci.yml',
+      '**/CMakeLists.txt',
+      '**/*.h',
+      '**/*.hpp',
+      '**/*.c',
+      '**/*.cpp',
+      'gguf-py/**',
+    ]
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths: [
+      '.github/workflows/ms-ci.yml',
+      '**/CMakeLists.txt',
+      '**/*.h',
+      '**/*.hpp',
+      '**/*.c',
+      '**/*.cpp',
+      'gguf-py/**',
+    ]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref && github.ref || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  ms-cpu:
+    name: ms / ${{ matrix.os }}
+    if: ${{ github.repository == 'devvexus/ms-llama.cpp' }}
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            defines: '-DGGML_NATIVE=OFF'
+          - os: windows-2025
+            defines: '-G Ninja -DCMAKE_TOOLCHAIN_FILE=cmake/x64-windows-llvm.cmake -DCMAKE_BUILD_TYPE=Release -DGGML_NATIVE=OFF -DGGML_OPENMP=OFF'
+
+    steps:
+      - name: Clone
+        uses: actions/checkout@v6
+
+      - name: Install Ninja and LLVM
+        if: ${{ runner.os == 'Windows' }}
+        run: |
+          choco install ninja
+          choco install llvm --version=22.1.8
+          echo "C:\Program Files\LLVM\bin" >> $env:GITHUB_PATH
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Python dependencies
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install numpy pytest
+
+      - name: Build
+        shell: bash
+        run: |
+          cmake -S . -B build ${{ matrix.defines }} -DLLAMA_BUILD_TESTS=ON -DLLAMA_BUILD_EXAMPLES=ON -DLLAMA_BUILD_SERVER=OFF \
+            -DLLAMA_BUILD_TOOLS=OFF -DLLAMA_OPENSSL=OFF
+          cmake --build build --config Release -j 4 --target test-ms-c test-backend-ops llama-gguf
+
+      - name: test-ms-c
+        shell: bash
+        run: |
+          B=$(dirname $(find build -name 'test-ms-c*' -type f | grep -E 'test-ms-c(\.exe)?$' | head -1))
+          echo "BIN=$B" >> $GITHUB_ENV
+          $B/test-ms-c
+
+      - name: test-backend-ops (MS cases, CPU)
+        shell: bash
+        run: |
+          $BIN/test-backend-ops test -b CPU -p ms_c
+
+      - name: MS Gen 1 -> Gen 2 migration
+        shell: bash
+        run: |
+          python -m pytest -q gguf-py/tests/test_ms_migrate.py
+          python gguf-py/tests/test_ms_migrate.py --write-dir build/ms-synth
+          # the C++ loader: a Gen 1 file fails with the MS Gen 1 message, the Gen 2 file loads
+          if $BIN/llama-gguf build/ms-synth/gen1.gguf r n > gen1.log 2>&1; then
+            echo "a Gen 1 file loaded"; cat gen1.log; exit 1
+          fi
+          grep -q "MS Gen 1 file" gen1.log || { cat gen1.log; exit 1; }
+          $BIN/llama-gguf build/ms-synth/gen2.gguf r n
