@@ -636,7 +636,10 @@ llama_model_qwen4exp::graph_mtp::graph_mtp(const llm_graph_params & params) :
     ggml_tensor * inp_pos     = build_inp_pos();
     ggml_tensor * inp_out_ids = build_inp_out_ids();
 
-    ggml_tensor * h_norm = build_norm(ggml_reshape_3d(ctx0, h, n_embd, hc, n_tokens), layer.nextn.hnorm, nullptr, LLM_NORM_RMS, il);
+    // pre_fc_norm_hidden is one RMSNorm over the whole hc-wide row, not one per stream (vLLM, SGLang)
+    ggml_tensor * h_norm = ggml_rms_norm(ctx0, h, hparams.f_norm_rms_eps);
+    h_norm = ggml_mul(ctx0, h_norm, ggml_reshape_1d(ctx0, layer.nextn.hnorm, n_embd*hc));
+    h_norm = ggml_reshape_3d(ctx0, h_norm, n_embd, hc, n_tokens);
     cb(h_norm, "mtp_hnorm", il);
 
     ggml_tensor * e_norm = build_norm(tok_embd, layer.nextn.enorm, nullptr, LLM_NORM_RMS, il);
