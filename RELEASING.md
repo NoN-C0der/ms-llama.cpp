@@ -45,7 +45,7 @@ Follow a run with `gh run watch -R devvexus/ms-llama.cpp`; check the result with
 ## Rules
 
 - Version tags are `ms-vX.Y` or `ms-vX.Y.Z`; the workflows refuse other names and an existing tag.
-- Release 1 (`ms-v1.0`) is the last release that reads MS Gen 1 files (type ids 43..48). Later releases need Gen 2 files:
-  `python gguf-py/gguf/scripts/gguf_ms_migrate.py <gen1.gguf> <gen2.gguf>`.
+- Every release reads both MS file generations: Gen 1 (type ids 43..48, the files made for `ms-v1.0`) is mapped to the Gen 2
+  ids (201..206) at load time; new MS files are written with the Gen 2 ids. Nothing to do for users.
 - Upstream's own release workflows (`release.yml`, `release-publish.yml`, `make-release.yml`) only run in ggml-org/llama.cpp.
 - To withdraw a release: `gh release delete ms-v1.1 -R devvexus/ms-llama.cpp --cleanup-tag` (asks first).
