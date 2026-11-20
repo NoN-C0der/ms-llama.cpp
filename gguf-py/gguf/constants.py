@@ -7537,8 +7537,9 @@ MS_GEN1_ERROR     = ("MS Gen 1 file: use ms-llama.cpp release 1 (ms-v1.0), or mi
 
 
 def ms_is_metadata_key(key: str) -> bool:
-    # the "msffn." keys of the MS converter and the MS rotation keys mark an MS file
-    return key.startswith("msffn.") or key in ("prism.hadamard.weight_sign_ids", "prism.hadamard.inverse_sign_ids")
+    # the "msffn." keys mark an MS file (every MS file has them, the MTP sidecar too); prism.hadamard.* alone does not:
+    # upstream uses it for other models (PrismML Bonsai)
+    return key.startswith("msffn.")
 
 
 def ms_is_gen1(keys: Iterable[str], type_ids: Iterable[int]) -> bool:

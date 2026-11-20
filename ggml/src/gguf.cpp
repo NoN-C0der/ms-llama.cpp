@@ -433,14 +433,14 @@ struct gguf_context * gguf_init_empty(void) {
 
 // MS (Mad Shift) Gen 1 files, written for ms-llama.cpp release 1 (ms-v1.0), store MS_C1..MS_C6 as the type ids 43..48.
 // Upstream later gave 43 to F8_E4M3, so the MS types moved to 201..206 ("Gen 2"); 44..48 are unused ids here.
-// An MS file is told by its MS metadata: the "msffn." keys of the MS converter, or the MS rotation keys.
+// An MS file is told by its "msffn." keys (every MS file has them, the MTP sidecar too). The prism.hadamard.* keys alone do not
+// make an MS file: upstream uses them for other models (PrismML Bonsai).
 static constexpr int GGUF_MS_GEN1_TYPE_FIRST = 43;
 static constexpr int GGUF_MS_GEN1_TYPE_LAST  = 48;
 
 static bool gguf_has_ms_metadata(const struct gguf_context * ctx) {
     for (const gguf_kv & kv : ctx->kv) {
-        if (kv.key.rfind("msffn.", 0) == 0 ||
-            kv.key == "prism.hadamard.weight_sign_ids" || kv.key == "prism.hadamard.inverse_sign_ids") {
+        if (kv.key.rfind("msffn.", 0) == 0) {
             return true;
         }
     }

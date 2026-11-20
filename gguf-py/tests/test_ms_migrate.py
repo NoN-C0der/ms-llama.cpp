@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 # MS (Mad Shift) Gen 1 -> Gen 2 migration (gguf/scripts/gguf_ms_migrate.py) on a tiny synthetic GGUF.
 # pytest gguf-py/tests/test_ms_migrate.py, or: python gguf-py/tests/test_ms_migrate.py --write-dir DIR (writes gen1.gguf and
-# gen2.gguf for a check of the C++ loader: a Gen 1 file must fail with "MS Gen 1 file", the Gen 2 file must load).
+# gen2.gguf for a check of the C++ loader: a Gen 1 file must fail with "MS Gen 1 file", the Gen 2 file must load, and so must
+# prism_f8.gguf, prism.hadamard keys with an F8_E4M3 tensor but no msffn key).
 from __future__ import annotations
 
 import argparse
@@ -44,6 +45,20 @@ def write_gen2(path: Path) -> None:
     w.close()
 
 
+def write_prism_f8(path: Path) -> None:
+    # not an MS file: prism.hadamard.* keys (as upstream writes for PrismML Bonsai models, here with the key names MS also uses)
+    # and a real F8_E4M3 tensor (type id 43), but no msffn.* key: it must load, not fail as MS Gen 1
+    w = gguf.GGUFWriter(path, 'llama')
+    w.add_uint32('prism.hadamard.version', 2)
+    w.add_array('prism.hadamard.weight_names', ['w'])
+    w.add_array('prism.hadamard.weight_sign_ids', [0])
+    w.add_tensor('w', np.zeros(512, dtype=np.uint8), raw_dtype=GGMLQuantizationType.F8_E4M3)
+    w.write_header_to_file()
+    w.write_kv_data_to_file()
+    w.write_tensors_to_file()
+    w.close()
+
+
 def make_gen1(src: Path, dst: Path) -> None:
     # the inverse of the migration: ids 201..206 -> 43..48, file type 200 -> 42
     shutil.copyfile(src, dst)
@@ -67,6 +82,13 @@ def test_reader_rejects_gen1(tmp_path):
         gguf.GGUFReader(tmp_path / 'gen1.gguf')
     r = gguf.GGUFReader(tmp_path / 'gen2.gguf')
     assert [int(t.tensor_type) for t in r.tensors[:6]] == list(MS_GEN2_TYPE_IDS)
+
+
+def test_prism_keys_alone_are_not_ms(tmp_path):
+    write_prism_f8(tmp_path / 'prism_f8.gguf')
+    r = gguf.GGUFReader(tmp_path / 'prism_f8.gguf')
+    assert [int(t.tensor_type) for t in r.tensors] == [int(GGMLQuantizationType.F8_E4M3)]
+    assert mig.Header(tmp_path / 'prism_f8.gguf').gen == 0
 
 
 def test_migrate_round_trip(tmp_path):
@@ -94,19 +116,20 @@ def test_migrate_refuses(tmp_path):
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument('--write-dir', required=True, help='directory for gen1.gguf, gen2.gguf and the migrated migrated.gguf')
+    ap.add_argument('--write-dir', required=True, help='directory for gen1.gguf, gen2.gguf, migrated.gguf and prism_f8.gguf')
     a = ap.parse_args()
     d = Path(a.write_dir)
     d.mkdir(parents=True, exist_ok=True)
-    for n in ('gen1.gguf', 'gen2.gguf', 'migrated.gguf'):
+    for n in ('gen1.gguf', 'gen2.gguf', 'migrated.gguf', 'prism_f8.gguf'):
         (d / n).unlink(missing_ok=True)
+    write_prism_f8(d / 'prism_f8.gguf')
     write_gen2(d / 'gen2.gguf')
     make_gen1(d / 'gen2.gguf', d / 'gen1.gguf')
     mig.migrate(d / 'gen1.gguf', d / 'migrated.gguf', do_verify=True)
     gc.collect()
     if (d / 'migrated.gguf').read_bytes() != (d / 'gen2.gguf').read_bytes():
         raise SystemExit('the migrated file differs from the Gen 2 file')
-    print(f'wrote {d / "gen1.gguf"}, {d / "gen2.gguf"}; the migration of gen1 equals gen2')
+    print(f'wrote {d / "gen1.gguf"}, {d / "gen2.gguf"}, {d / "prism_f8.gguf"}; the migration of gen1 equals gen2')
 
 
 if __name__ == '__main__':

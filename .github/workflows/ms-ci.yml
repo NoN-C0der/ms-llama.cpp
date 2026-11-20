@@ -103,3 +103,5 @@ jobs:
           fi
           grep -q "MS Gen 1 file" gen1.log || { cat gen1.log; exit 1; }
           $BIN/llama-gguf build/ms-synth/gen2.gguf r n
+          # prism.hadamard keys without msffn keys are not MS: its F8_E4M3 tensor (id 43) loads
+          $BIN/llama-gguf build/ms-synth/prism_f8.gguf r n
