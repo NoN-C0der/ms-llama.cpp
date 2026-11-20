@@ -95,8 +95,9 @@ class Qwen4ExpTextModel(_Qwen35MRopeMixin, _LinearAttentionVReorderBase):
         ratio = hp["indexer_compress_ratio"]
         layer_types = hp["layer_types"]
         # the MTP block is a full-attention QSA layer too
+        # every attention layer is QSA; transformers renames "full_attention" to qwen_sparse_attention, later indexed_attention
         self.gguf_writer.add_attention_compress_ratios(
-            [ratio if layer_types[i] == "full_attention" else 0 for i in range(n_layer)]
+            [ratio if layer_types[i] != "linear_attention" else 0 for i in range(n_layer)]
             + [ratio] * (self.block_count - n_layer)
         )
 
