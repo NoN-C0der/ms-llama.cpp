@@ -480,8 +480,13 @@ llama_model_qwen4exp::graph::graph(const llm_graph_params & params) :
 
     // the QSA layers share one set of k-pool inputs
     // the CUDA lightning indexer takes 32 or 64 heads, QSA has a few, so it scores with plain ops
+    // the ratio can come from the MTP block alone; inputs no trunk layer reads stay unallocated
+    bool trunk_qsa = false;
+    for (int il = 0; il < n_layer; ++il) {
+        trunk_qsa = trunk_qsa || hparams.dsv4_compress_ratios[il] > 0;
+    }
     llm_graph_input_kpool * inp_kpool = nullptr;
-    if (mctx_idx && hparams.indexer_kpool > 0) {
+    if (mctx_idx && hparams.indexer_kpool > 0 && trunk_qsa) {
         inp_kpool = build_inp_kpool(mctx_hyb);
     }
 
