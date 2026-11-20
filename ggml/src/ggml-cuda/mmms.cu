@@ -1019,17 +1019,18 @@ static void mul_mat_ms_c_small_run(ggml_backend_cuda_context & ctx, mmms_args a,
     mul_mat_ms_c_small<k><<<grid, block, 0, stream>>>(a, counters.get());
 }
 
-static void ggml_cuda_mul_mat_ms_small(ggml_backend_cuda_context & ctx, const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst) {
+static void ggml_cuda_mul_mat_ms_small(ggml_backend_cuda_context & ctx, const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst,
+        const bool cache_ok) {
     GGML_TENSOR_BINARY_OP_LOCALS;
 
     GGML_ASSERT(ne00 % MMMS_SC == 0);
 
     // the f16 y is kept for the next matmuls of this graph evaluation that read src1 (Q, K, V; gate, up). Only for the
-    // MUL_MAT nodes themselves (callers such as MUL_MAT_ID hold pool memory of their own) and with one stream (the pools
-    // are per stream).
+    // MUL_MAT nodes themselves (cache_ok: callers such as MUL_MAT_ID hold pool memory of their own) and with one stream
+    // (the pools are per stream).
     const size_t y_size    = (size_t) ne12*ne13*ne11*ne10*sizeof(half);
     const size_t y_alloc   = y_size + (size_t) ne12*ne13*ne11*sizeof(float);
-    const bool   use_cache = dst->op == GGML_OP_MUL_MAT && ctx.stream_context().concurrent_events.empty();
+    const bool   use_cache = cache_ok && ctx.stream_context().concurrent_events.empty();
     const bool   cached    = use_cache && ctx.mmms_y_src == src1 && ctx.mmms_y;
     ggml_cuda_pool_alloc<char> y_tmp(ctx.pool());
     char * yb;
@@ -1222,7 +1223,7 @@ static void ggml_cuda_mul_mat_ms_impl(ggml_backend_cuda_context & ctx, const ggm
 
     if (ne11 <= MMMS_SMALL_MAX_COLS) {
         GGML_ASSERT(src0_up == nullptr);
-        ggml_cuda_mul_mat_ms_small(ctx, src0, src1, dst);
+        ggml_cuda_mul_mat_ms_small(ctx, src0, src1, dst, cache_ok);
         return;
     }
 
@@ -1332,7 +1333,10 @@ static void ggml_cuda_mul_mat_ms_impl(ggml_backend_cuda_context & ctx, const ggm
 }
 
 void ggml_cuda_mul_mat_ms(ggml_backend_cuda_context & ctx, const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst) {
-    ggml_cuda_mul_mat_ms_impl(ctx, src0, nullptr, src1, dst, dst->op == GGML_OP_MUL_MAT, -1, 0.0f);
+    // only a MUL_MAT node of the graph may keep its f16 y: the MUL_MAT_ID fallback calls this with slices that also have
+    // op MUL_MAT (for their precision), but no sources, and it frees pool memory of its own after them
+    const bool cache_ok = dst->op == GGML_OP_MUL_MAT && dst->src[0] == src0 && dst->src[1] == src1;
+    ggml_cuda_mul_mat_ms_impl(ctx, src0, nullptr, src1, dst, cache_ok, -1, 0.0f);
 }
 
 bool ggml_cuda_should_fuse_mul_mat_ms(const ggml_tensor * up, const ggml_tensor * gate, const ggml_tensor * glu, const int cc) {
