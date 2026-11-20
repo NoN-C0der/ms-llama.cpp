@@ -48,6 +48,7 @@ concurrency:
 
 jobs:
   ui-build:
+    if: ${{ github.repository == 'ggml-org/llama.cpp' }}
     name: Build static output
     uses: ./.github/workflows/ui-build-self-hosted.yml
     permissions:
@@ -55,6 +56,7 @@ jobs:
       contents: read
 
   ui-checks:
+    if: ${{ github.repository == 'ggml-org/llama.cpp' }}
     name: Checks
     needs: ui-build
     runs-on: [self-hosted, PLAYWRIGHT]
@@ -98,6 +100,7 @@ jobs:
         working-directory: ui/apps/chat
 
   e2e-tests:
+    if: ${{ github.repository == 'ggml-org/llama.cpp' }}
     name: E2E Tests
     needs: ui-build
     runs-on: [self-hosted, PLAYWRIGHT]

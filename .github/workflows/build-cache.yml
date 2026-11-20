@@ -41,6 +41,7 @@ jobs:
   #        version: ${{ env.SPACEMIT_IME_TOOLCHAIN_VERSION }}
 
   ubuntu-26-openvino-cache:
+    if: ${{ github.repository == 'ggml-org/llama.cpp' }}
     runs-on: ubuntu-26.04
 
     env:
@@ -69,6 +70,7 @@ jobs:
           version_full: ${{ env.OPENVINO_VERSION_FULL }}
 
   windows-2022-openvino-cache:
+    if: ${{ github.repository == 'ggml-org/llama.cpp' }}
     runs-on: windows-2022
 
     env:

@@ -50,6 +50,7 @@ env:
 
 jobs:
   gpu-metal:
+    if: ${{ github.repository == 'ggml-org/llama.cpp' }}
     runs-on: [self-hosted, macOS, ARM64]
 
     steps:

@@ -23,6 +23,7 @@ permissions:
 
 jobs:
   deploy:
+    if: ${{ github.repository == 'ggml-org/llama.cpp' }}
 
     runs-on: ubuntu-26.04
 

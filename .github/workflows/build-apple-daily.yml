@@ -22,6 +22,7 @@ env:
 
 jobs:
   macos-latest-ios-xcode:
+    if: ${{ github.repository == 'ggml-org/llama.cpp' }}
     runs-on: macos-latest
 
     permissions:
@@ -72,6 +73,7 @@ jobs:
           xcodebuild -project examples/llama.swiftui/llama.swiftui.xcodeproj -scheme llama.swiftui -sdk iphoneos CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY= -destination 'generic/platform=iOS' FRAMEWORK_FOLDER_PATH=./build-ios build
 
   macos-latest-tvos:
+    if: ${{ github.repository == 'ggml-org/llama.cpp' }}
     runs-on: macos-latest
 
     steps:
@@ -97,6 +99,7 @@ jobs:
           cmake --build build --config Release -j $(sysctl -n hw.logicalcpu) -- CODE_SIGNING_ALLOWED=NO
 
   macos-latest-visionos:
+    if: ${{ github.repository == 'ggml-org/llama.cpp' }}
     runs-on: macos-latest
 
     steps:
@@ -122,6 +125,7 @@ jobs:
           cmake --build build --config Release -j $(sysctl -n hw.logicalcpu) -- CODE_SIGNING_ALLOWED=NO
 
   macos-latest-swift:
+    if: ${{ github.repository == 'ggml-org/llama.cpp' }}
     runs-on: macos-latest
     needs: macos-latest-ios-xcode
 

@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   find-related:
-    if: github.event.action == 'opened'
+    if: ${{ github.repository == 'ggml-org/llama.cpp' && (github.event.action == 'opened') }}
     runs-on: [self-hosted, opencode]
 
     permissions:
