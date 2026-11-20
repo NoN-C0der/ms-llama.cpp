@@ -47,7 +47,7 @@ jobs:
       matrix:
         include:
           - os: ubuntu-24.04
-            defines: '-DGGML_NATIVE=OFF'
+            defines: '-DCMAKE_BUILD_TYPE=Release -DGGML_NATIVE=OFF'
           - os: windows-2025
             defines: '-G Ninja -DCMAKE_TOOLCHAIN_FILE=cmake/x64-windows-llvm.cmake -DCMAKE_BUILD_TYPE=Release -DGGML_NATIVE=OFF -DGGML_OPENMP=OFF'
 
