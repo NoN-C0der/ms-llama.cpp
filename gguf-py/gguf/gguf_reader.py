@@ -30,6 +30,8 @@ from gguf.constants import (
     GGMLQuantizationType,
     GGUFValueType,
     GGUFEndian,
+    MS_GEN1_ERROR,
+    ms_is_gen1,
 )
 
 # limits mirroring ggml/src/gguf.cpp (not part of gguf.h)
@@ -333,6 +335,9 @@ class GGUFReader:
         return offs, tensor_fields
 
     def _build_tensors(self, start_offs: int, fields: list[ReaderField]) -> None:
+        # an MS (Mad Shift) Gen 1 file would read as F8_E4M3 or unknown types
+        if ms_is_gen1(self.fields.keys(), (int(field.parts[4][0]) for field in fields)):
+            raise ValueError(MS_GEN1_ERROR)
         tensors = []
         tensor_names = set() # keep track of name to prevent duplicated tensors
         for field in fields:

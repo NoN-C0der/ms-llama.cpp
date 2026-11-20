@@ -1403,7 +1403,8 @@ size_t ggml_row_size(enum ggml_type type, int64_t ne) {
 const char * ggml_type_name(enum ggml_type type) {
     assert(type >= 0);
     assert(type < GGML_TYPE_COUNT);
-    return type_traits[type].type_name;
+    // the ids between the upstream types and the MS block (44..200) have no traits: blck_size 0, no name
+    return type_traits[type].type_name ? type_traits[type].type_name : "UNUSED";
 }
 
 bool ggml_is_quantized(enum ggml_type type) {

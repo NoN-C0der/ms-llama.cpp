@@ -431,6 +431,28 @@ struct gguf_context * gguf_init_empty(void) {
     return new gguf_context;
 }
 
+// MS (Mad Shift) Gen 1 files, written for ms-llama.cpp release 1 (ms-v1.0), store MS_C1..MS_C6 as the type ids 43..48.
+// Upstream later gave 43 to F8_E4M3, so the MS types moved to 201..206 ("Gen 2"); 44..48 are unused ids here.
+// An MS file is told by its MS metadata: the "msffn." keys of the MS converter, or the MS rotation keys.
+static constexpr int GGUF_MS_GEN1_TYPE_FIRST = 43;
+static constexpr int GGUF_MS_GEN1_TYPE_LAST  = 48;
+
+static bool gguf_has_ms_metadata(const struct gguf_context * ctx) {
+    for (const gguf_kv & kv : ctx->kv) {
+        if (kv.key.rfind("msffn.", 0) == 0 ||
+            kv.key == "prism.hadamard.weight_sign_ids" || kv.key == "prism.hadamard.inverse_sign_ids") {
+            return true;
+        }
+    }
+    return false;
+}
+
+static void gguf_log_ms_gen1(const char * func) {
+    GGML_LOG_ERROR("%s: MS Gen 1 file: use ms-llama.cpp release 1 (ms-v1.0), or migrate it with "
+        "'python gguf-py/gguf/scripts/gguf_ms_migrate.py <gen1.gguf> <gen2.gguf>' "
+        "(its MS tensors use the type ids 43..48, which this build gives to other types)\n", func);
+}
+
 template<typename T>
 bool gguf_read_emplace_helper(const struct gguf_reader & gr, std::vector<struct gguf_kv> & kv, const std::string & key, const bool is_array, const size_t n) {
     if (is_array) {
@@ -639,6 +661,11 @@ static struct gguf_context * gguf_init_from_reader(const struct gguf_reader & gr
     // read the tensor info
     std::unordered_set<std::string> seen_tensor_names;
 
+    // MS Gen 1 detection: an MS file with types in 43..48 and none in the MS block 201..206
+    const bool ms_file = gguf_has_ms_metadata(ctx);
+    int64_t n_ms_gen1 = 0;
+    int64_t n_ms_gen2 = 0;
+
     for (int64_t i = 0; ok && i < n_tensors; ++i) {
         struct gguf_tensor_info info;
 
@@ -726,6 +753,18 @@ static struct gguf_context * gguf_init_from_reader(const struct gguf_reader & gr
         {
             ok = ok && gr.read(info.t.type);
 
+            const bool type_ms_gen1 = ok && info.t.type >= GGUF_MS_GEN1_TYPE_FIRST && info.t.type <= GGUF_MS_GEN1_TYPE_LAST;
+            if (ms_file) {
+                n_ms_gen1 += type_ms_gen1;
+                n_ms_gen2 += ok && info.t.type >= GGML_TYPE_MS_C1 && info.t.type <= GGML_TYPE_MS_C6;
+                // 44..48 are no type of this build, 43 (F8_E4M3) is checked once all types are read
+                if (type_ms_gen1 && info.t.type != GGUF_MS_GEN1_TYPE_FIRST) {
+                    gguf_log_ms_gen1(__func__);
+                    ok = false;
+                    break;
+                }
+            }
+
             // check that tensor type is within defined range
             if (info.t.type < 0 || info.t.type >= GGML_TYPE_COUNT) {
                 GGML_LOG_ERROR("%s: tensor '%s' has invalid ggml type %d. should be in [0, %d)\n",
@@ -735,6 +774,14 @@ static struct gguf_context * gguf_init_from_reader(const struct gguf_reader & gr
             }
             const size_t  type_size = ggml_type_size(info.t.type);
             const int64_t blck_size = ggml_blck_size(info.t.type);
+
+            // 44..48 in a file without MS metadata: an unused id here (44..200), give the MS Gen 1 hint
+            if (blck_size == 0 && type_ms_gen1) {
+                GGML_LOG_ERROR("%s: tensor '%s' has unused ggml type %d (if this is an MS file, 43..48 were MS_C1..MS_C6 in MS Gen 1)\n",
+                    __func__, info.t.name, (int) info.t.type);
+                ok = false;
+                break;
+            }
 
             // check that row size is divisible by block size
             if (blck_size == 0 || info.t.ne[0] % blck_size != 0) {
@@ -776,6 +823,13 @@ static struct gguf_context * gguf_init_from_reader(const struct gguf_reader & gr
         return nullptr;
     }
     GGML_ASSERT(int64_t(ctx->info.size()) == n_tensors);
+
+    // an MS file whose MS tensors are 43 (Gen 1 MS_C1) and none 201..206 would load as F8_E4M3 garbage
+    if (ms_file && n_ms_gen1 > 0 && n_ms_gen2 == 0) {
+        gguf_log_ms_gen1(__func__);
+        gguf_free(ctx);
+        return nullptr;
+    }
 
     // we require the data section to be aligned, so take into account any padding
     if (n_tensors > 0 && !gr.seek(gr.start() + GGML_PAD(gr.tell() - gr.start(), ctx->alignment))) {
