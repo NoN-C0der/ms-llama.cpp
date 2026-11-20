@@ -494,7 +494,7 @@ static __device__ __forceinline__ void mul_mat_ms_c_body(
 
             // 16 warps: the weights of step s + 1 are decoded before the mma of step s are issued
             constexpr bool pipe = nwarps == 16;
-            uint32_t an[4];
+            [[maybe_unused]] uint32_t an[4];
             if constexpr (pipe) {
                 mmms_decode_step<k, 0>(wna, dca, an[0], an[2]);
                 mmms_decode_step<k, 0>(wnb, dcb, an[1], an[3]);

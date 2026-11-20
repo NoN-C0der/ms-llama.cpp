@@ -763,7 +763,7 @@ static __global__ void mul_mat_vec_q(
     static_assert(!warp_rows || (rows_per_cuda_block >= nwarps && rows_per_cuda_block % nwarps == 0), "warp_rows needs whole rows per warp");
 
     const block_y16 * y16_base = (const block_y16 *) ((const block_q8_1 *) vy + fusion.y_res);
-    auto vec_dot_q_cuda = [&](const void * vbq, const block_q8_1 * bq8_1, const int kbx, const int iqs) {
+    [[maybe_unused]] auto vec_dot_q_cuda = [&](const void * vbq, const block_q8_1 * bq8_1, const int kbx, const int iqs) {
         return mmvq_vec_dot<type>(vbq, bq8_1, y16_base + (bq8_1 - (const block_q8_1 *) vy), kbx, iqs);
     };
 
