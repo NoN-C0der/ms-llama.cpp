@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import gc
+import logging
 import os
 import shutil
 import sys
@@ -149,7 +150,8 @@ def main() -> None:
     gc.collect()
     if (d / 'migrated.gguf').read_bytes() != (d / 'gen2.gguf').read_bytes():
         raise SystemExit('the migrated file differs from the Gen 2 file')
-    print(f'wrote gen1.gguf, gen2.gguf, prism_f8.gguf, plain_f8.gguf in {d}; the migration of gen1 equals gen2')
+    logging.basicConfig(level=logging.INFO, format='%(message)s')
+    logging.getLogger('test-ms-migrate').info(f'wrote gen1.gguf, gen2.gguf, prism_f8.gguf, plain_f8.gguf in {d}; the migration of gen1 equals gen2')
 
 
 if __name__ == '__main__':

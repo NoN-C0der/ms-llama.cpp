@@ -21,6 +21,7 @@ import os
 import shutil
 import sys
 from pathlib import Path
+from typing import Literal
 
 # Necessary to load the local gguf package
 if "NO_LOCAL_GGUF" not in os.environ and (Path(__file__).parent.parent.parent.parent / 'gguf-py').exists():
@@ -60,7 +61,7 @@ def byte_offset(reader: GGUFReader, view: np.ndarray) -> int:
 
 
 class Header:
-    def __init__(self, path: Path, mode: str = 'r'):
+    def __init__(self, path: Path, mode: Literal['r', 'r+', 'c'] = 'r'):
         self.reader = HeaderReader(path, mode)
         r = self.reader
         self.is_ms   = any(ms_is_metadata_key(k) for k in r.fields)
@@ -102,7 +103,7 @@ class Header:
 
     def close(self) -> None:
         # drops the memmap: a mapped file cannot be renamed or replaced on Windows
-        self.reader = None
+        del self.reader
         gc.collect()
 
 
@@ -225,7 +226,7 @@ def main() -> None:
     if args.check:
         for f in args.files:
             h = Header(Path(f), 'r')
-            print(f"{f}: {h.describe()}")
+            logger.info(f"{f}: {h.describe()}")
             h.close()
         return
     if len(args.files) != 2:
