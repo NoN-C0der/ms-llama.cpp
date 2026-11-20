@@ -262,12 +262,12 @@ static __device__ __forceinline__ uint32_t mmms_state(const uint32_t (&wn)[nw]) 
 // f16 bits of 1536 + v for state s: 0x6600 + v is in [0x6400, 0x6800), where the f16 spacing is 1
 static __device__ __forceinline__ uint32_t mmms_value_f16(const uint32_t s) {
     const uint32_t x = GGML_MS_C_A*s + GGML_MS_C_B;
-#if __CUDA_ARCH__ >= GGML_CUDA_CC_DP4A
+#if !defined(GGML_USE_HIP) && __CUDA_ARCH__ >= GGML_CUDA_CC_DP4A
     return __dp4a(x, 0x01010101u, 0x6600u - 510u);
 #else
-    // no dp4a (the kernels do not run there, they only have to compile)
+    // no unsigned __dp4a (HIP defines __CUDA_ARCH__ but has no __dp4a; older NVIDIA archs): the same sum in plain integer ops
     return (x & 0xFF) + ((x >> 8) & 0xFF) + ((x >> 16) & 0xFF) + (x >> 24) + 0x6600u - 510u;
-#endif // __CUDA_ARCH__ >= GGML_CUDA_CC_DP4A
+#endif // !defined(GGML_USE_HIP) && __CUDA_ARCH__ >= GGML_CUDA_CC_DP4A
 }
 
 // words per block: the stream [s0][qs] is 32 + 512*k bits, the word i >= 1 is the big endian word i of the block
@@ -972,8 +972,9 @@ mul_mat_ms_c_small(const mmms_args a, int * __restrict__ counters) {
 #endif // defined(TURING_MMA_AVAILABLE)
 }
 
+// y_conv, inv_scale_conv: where src1 is converted to (a.y and a.inv_scale, writable), nullptr if a.y already holds it
 template <int k>
-static void mul_mat_ms_c_small_run(ggml_backend_cuda_context & ctx, mmms_args a, const ggml_tensor * src1, const bool convert) {
+static void mul_mat_ms_c_small_run(ggml_backend_cuda_context & ctx, mmms_args a, const ggml_tensor * src1, half2 * y_conv, float * inv_scale_conv) {
     GGML_TENSOR_LOCALS(int64_t, ne1, src1, ne);
     GGML_TENSOR_LOCALS(size_t,  nb1, src1, nb);
     cudaStream_t stream = ctx.stream();
@@ -1001,15 +1002,15 @@ static void mul_mat_ms_c_small_run(ggml_backend_cuda_context & ctx, mmms_args a,
         CUDA_CHECK(cudaMemsetAsync(counters.get(), 0, ntiles*sizeof(int), stream));
     }
 
-    if (convert) {
+    if (y_conv != nullptr) {
         const bool aligned = (uintptr_t) src1->data % 8 == 0 && nb11 % 8 == 0 && nb12 % 8 == 0 && nb13 % 8 == 0;
         const dim3 grid(ne12*ne13*ne11, (ne10 + MMMS_SMALL_CONVERT_SLICE - 1)/MMMS_SMALL_CONVERT_SLICE);
         if (aligned) {
-            mmms_small_convert_y<true><<<grid, MMMS_CONVERT_NT, 0, stream>>>((const float *) src1->data, (half2 *) a.y,
-                (float *) a.inv_scale, ne10, ne11, ne12, nb11/sizeof(float), nb12/sizeof(float), nb13/sizeof(float));
+            mmms_small_convert_y<true><<<grid, MMMS_CONVERT_NT, 0, stream>>>((const float *) src1->data, y_conv,
+                inv_scale_conv, ne10, ne11, ne12, nb11/sizeof(float), nb12/sizeof(float), nb13/sizeof(float));
         } else {
-            mmms_small_convert_y<false><<<grid, MMMS_CONVERT_NT, 0, stream>>>((const float *) src1->data, (half2 *) a.y,
-                (float *) a.inv_scale, ne10, ne11, ne12, nb11/sizeof(float), nb12/sizeof(float), nb13/sizeof(float));
+            mmms_small_convert_y<false><<<grid, MMMS_CONVERT_NT, 0, stream>>>((const float *) src1->data, y_conv,
+                inv_scale_conv, ne10, ne11, ne12, nb11/sizeof(float), nb12/sizeof(float), nb13/sizeof(float));
         }
         CUDA_CHECK(cudaGetLastError());
     }
@@ -1052,13 +1053,16 @@ static void ggml_cuda_mul_mat_ms_small(ggml_backend_cuda_context & ctx, const gg
     a.ne1 = ne11; a.ne11_pad = ne11; a.ne12 = ne12; a.ne13 = ne13; a.r2 = ne12/ne02; a.r3 = ne13/ne03;
     a.s1 = nb1/sizeof(float); a.s2 = nb2/sizeof(float); a.s3 = nb3/sizeof(float);
 
+    half2 * y_conv         = cached ? nullptr : (half2 *) yb;
+    float * inv_scale_conv = cached ? nullptr : (float *) (yb + y_size);
+
     switch (src0->type) {
-        case GGML_TYPE_MS_C1: mul_mat_ms_c_small_run<1>(ctx, a, src1, !cached); break;
-        case GGML_TYPE_MS_C2: mul_mat_ms_c_small_run<2>(ctx, a, src1, !cached); break;
-        case GGML_TYPE_MS_C3: mul_mat_ms_c_small_run<3>(ctx, a, src1, !cached); break;
-        case GGML_TYPE_MS_C4: mul_mat_ms_c_small_run<4>(ctx, a, src1, !cached); break;
-        case GGML_TYPE_MS_C5: mul_mat_ms_c_small_run<5>(ctx, a, src1, !cached); break;
-        case GGML_TYPE_MS_C6: mul_mat_ms_c_small_run<6>(ctx, a, src1, !cached); break;
+        case GGML_TYPE_MS_C1: mul_mat_ms_c_small_run<1>(ctx, a, src1, y_conv, inv_scale_conv); break;
+        case GGML_TYPE_MS_C2: mul_mat_ms_c_small_run<2>(ctx, a, src1, y_conv, inv_scale_conv); break;
+        case GGML_TYPE_MS_C3: mul_mat_ms_c_small_run<3>(ctx, a, src1, y_conv, inv_scale_conv); break;
+        case GGML_TYPE_MS_C4: mul_mat_ms_c_small_run<4>(ctx, a, src1, y_conv, inv_scale_conv); break;
+        case GGML_TYPE_MS_C5: mul_mat_ms_c_small_run<5>(ctx, a, src1, y_conv, inv_scale_conv); break;
+        case GGML_TYPE_MS_C6: mul_mat_ms_c_small_run<6>(ctx, a, src1, y_conv, inv_scale_conv); break;
         default:
             GGML_ABORT("fatal error");
     }
