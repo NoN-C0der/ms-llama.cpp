@@ -1,0 +1,84 @@
+name: Build (Windows 10, Vulkan, AVX)
+
+# Fork build for Windows 10 x64 with a Radeon GPU over Vulkan.
+# Derived from .github/workflows/build-vulkan.yml (windows job) with these changes:
+#   - MSVC toolset instead of LLVM/clang
+#   - Vulkan SDK pinned to 1.3.296.0
+#   - CPU code built with /arch:AVX only (no AVX2/BMI2)
+#   - full binary set packed as a downloadable artifact
+on:
+  workflow_dispatch: # allows manual triggering
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  VULKAN_VERSION: 1.3.296.0
+  # cl.exe appends _CL_ after the command line, so /arch:AVX wins over any
+  # /arch:AVX2 that a target may add. GGML_AVX2=OFF below keeps ggml consistent.
+  _CL_: /arch:AVX
+
+jobs:
+  windows-vulkan-avx:
+    name: windows-10 / vulkan / avx
+    runs-on: windows-2022
+
+    steps:
+      - name: Clone
+        id: checkout
+        uses: actions/checkout@v6
+
+      - name: Install Vulkan SDK
+        id: get_vulkan
+        run: |
+          curl.exe -o $env:RUNNER_TEMP/VulkanSDK-Installer.exe -L "https://sdk.lunarg.com/sdk/download/${env:VULKAN_VERSION}/windows/VulkanSDK-${env:VULKAN_VERSION}-Installer.exe"
+          & "$env:RUNNER_TEMP\VulkanSDK-Installer.exe" --accept-licenses --default-answer --confirm-command install
+          Add-Content $env:GITHUB_ENV "VULKAN_SDK=C:\VulkanSDK\${env:VULKAN_VERSION}"
+          Add-Content $env:GITHUB_ENV "VK_SDK_PATH=C:\VulkanSDK\${env:VULKAN_VERSION}"
+          Add-Content $env:GITHUB_PATH "C:\VulkanSDK\${env:VULKAN_VERSION}\Bin"
+
+      - name: Verify Vulkan SDK
+        id: check_vulkan
+        run: |
+          glslc --version
+          if (-not (Test-Path "$env:VULKAN_SDK\Include\vulkan\vulkan_core.h")) { throw "vulkan_core.h not found in $env:VULKAN_SDK" }
+
+      - name: Build
+        id: cmake_build
+        run: |
+          cmake -S . -B build -G "Visual Studio 17 2022" -A x64 `
+            "-DCMAKE_SYSTEM_VERSION=10.0" `
+            -DGGML_NATIVE=OFF `
+            -DGGML_AVX=ON `
+            -DGGML_AVX2=OFF `
+            -DGGML_BMI2=OFF `
+            -DGGML_VULKAN=ON `
+            -DGGML_BACKEND_DL=ON `
+            -DGGML_CPU_ALL_VARIANTS=OFF `
+            -DLLAMA_BUILD_SERVER=ON `
+            -DGGML_RPC=ON `
+            -DLLAMA_BUILD_BORINGSSL=ON
+          cmake --build build --config Release -j ${env:NUMBER_OF_PROCESSORS}
+
+      - name: Test
+        id: cmake_test
+        run: |
+          cd build
+          ctest -L main -C Release --verbose --timeout 900
+
+      - name: Pack artifacts
+        id: pack_artifacts
+        run: |
+          Copy-Item LICENSE .\build\bin\Release\
+          7z a -snl llama-bin-win-vulkan-avx-x64.zip .\build\bin\Release\*
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: llama-bin-win-vulkan-avx-x64
+          path: llama-bin-win-vulkan-avx-x64.zip
+          archive: false
