@@ -4,6 +4,7 @@ name: Build (Windows 10, Vulkan, AVX)
 # Derived from .github/workflows/build-vulkan.yml (windows job) with these changes:
 #   - MSVC toolset instead of LLVM/clang
 #   - Vulkan SDK pinned to 1.3.296.0
+#   - SPIRV-Headers installed separately (the 1.3.296.0 SDK has no CMake config for them)
 #   - CPU code built with /arch:AVX only (no AVX2/BMI2)
 #   - full binary set packed as a downloadable artifact
 on:
@@ -47,11 +48,22 @@ jobs:
           glslc --version
           if (-not (Test-Path "$env:VULKAN_SDK\Include\vulkan\vulkan_core.h")) { throw "vulkan_core.h not found in $env:VULKAN_SDK" }
 
+      - name: Install SPIRV-Headers
+        id: get_spirv_headers
+        run: |
+          git clone --depth 1 --branch "vulkan-sdk-${env:VULKAN_VERSION}" https://github.com/KhronosGroup/SPIRV-Headers.git "$env:RUNNER_TEMP\SPIRV-Headers"
+          cmake -S "$env:RUNNER_TEMP\SPIRV-Headers" -B "$env:RUNNER_TEMP\SPIRV-Headers\build" -G "Visual Studio 17 2022" -A x64 `
+            -DSPIRV_HEADERS_ENABLE_TESTS=OFF `
+            -DSPIRV_HEADERS_ENABLE_INSTALL=ON `
+            -DCMAKE_INSTALL_PREFIX="$env:RUNNER_TEMP\spirv-headers"
+          cmake --build "$env:RUNNER_TEMP\SPIRV-Headers\build" --config Release --target install
+
       - name: Build
         id: cmake_build
         run: |
           cmake -S . -B build -G "Visual Studio 17 2022" -A x64 `
             "-DCMAKE_SYSTEM_VERSION=10.0" `
+            "-DSPIRV-Headers_DIR=$env:RUNNER_TEMP\spirv-headers\share\cmake\SPIRV-Headers" `
             -DGGML_NATIVE=OFF `
             -DGGML_AVX=ON `
             -DGGML_AVX2=OFF `
